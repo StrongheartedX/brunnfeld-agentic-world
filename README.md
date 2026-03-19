@@ -157,24 +157,29 @@ Each `runTick()` executes in order:
 
 The engine constructs each agent's perception from world state. The agent never reads world state directly.
 
-```mermaid
-flowchart TD
-    WS[world_state.json] --> PB[Perception Builder]
-
-    PB --> T["Time: 'Spring, Monday 08:00, Day 1/7'"]
-    PB --> L["Location: 'Bakery'"]
-    PB --> W["Weather: 'Clear, 12°C'"]
-    PB --> O["Others: 'Gerda is here.'"]
-    PB --> B["Body: '(You're hungry.)'"]
-    PB --> INV["Inventory: 'flour ×2, bread ×3 (1 reserved)'"]
-    PB --> WA["Wallet: '32 coin'"]
-    PB --> LO["Loans: 'You owe 10c to Hans (due day 7)'"]
-    PB --> PR["Producible: '- produce bread → 4 bread [ready now]'"]
-    PB --> MKT["Marketplace: 'SELL: wheat ×8 at 2c...'"]
-    PB --> MSG["Messages: 'From Hans: do you have any bread?'"]
-    PB --> FB["Feedback: '[No match] No bread at or below 2c. Cheapest: 3c from Anselm.'"]
-
-    T & L & W & O & B & INV & WA & LO & PR & MKT & MSG & FB --> P[Perception String]
+```
+world_state.json
+      │
+      ▼
+┌─────────────────────┐
+│  Perception Builder │
+└─────────────────────┘
+      │
+      ├─ Time ·············· "Spring, Monday 08:00, Day 1/7"
+      ├─ Location ·········· "Bakery"
+      ├─ Weather ··········· "Clear, 12°C"
+      ├─ Others ··········· "Gerda is here."
+      ├─ Body ·············· "(You're hungry.)"
+      ├─ Inventory ········· "flour ×2, bread ×3 (1 reserved)"
+      ├─ Wallet ············ "32 coin"
+      ├─ Loans ············· "You owe 10c to Hans (due day 7)"
+      ├─ Producible ········ "- produce bread → 4 bread [ready now]"
+      ├─ Marketplace ······· "SELL: wheat ×8 at 2c (Hans)..."
+      ├─ Messages ·········· "From Hans: do you have any bread?"
+      └─ Feedback ·········· "[No match] Cheapest bread: 3c from Anselm."
+            │
+            ▼
+     Perception String → Agent Prompt
 ```
 
 Key design decisions:
