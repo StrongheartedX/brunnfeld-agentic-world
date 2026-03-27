@@ -10,7 +10,7 @@ import { buildActionSchema, resolveAction, type ResolveContext } from "./tools.j
 import { tickToTime } from "./time.js";
 import { RECIPES, MULTI_FARM_ITEMS } from "./production.js";
 import { computeVillageConcerns } from "./village-concerns.js";
-import { getAgentNames, getDisplayName, getCouncilMembers, getAgentVillage, getVillageLocations, getLocationType, getVillages } from "./world-registry.js";
+import { getAgentNames, getDisplayName, getCouncilMembers, getAgentVillage, getVillageLocations, getLocationType, getVillages, getRoads, isRoadLocation, getVillageForLocation } from "./world-registry.js";
 
 // ─── Hunger food hint ─────────────────────────────────────────
 
@@ -228,6 +228,84 @@ function getProducibleBlock(agent: AgentName, state: WorldState): string {
   return `\nYou can produce here:\n${lines.join("\n")}`;
 }
 
+// ─── Travel hint block ────────────────────────────────────────
+
+function buildTravelBlock(agent: AgentName, state: WorldState): string {
+  const villages = getVillages();
+  if (villages.length <= 1) return "";
+
+  const loc = state.agent_locations[agent];
+  const roads = getRoads();
+  const onRoad = isRoadLocation(loc);
+
+  if (onRoad) {
+    const road = roads.find(r => r.name === loc);
+    if (!road) return "";
+    const lines = road.connectsVillages.map(vid => {
+      const v = villages.find(v => v.id === vid);
+      const vName = v?.name ?? vid;
+      const vSquare = v?.locations.find(l => l.endsWith("Village Square")) ?? v?.locations[0] ?? vid;
+      return `  Go to ${vName}: move_to "${vSquare}"`;
+    });
+    return `Travel options (pick a direction):\n${lines.join("\n")}`;
+  }
+
+  const currentVid = getVillageForLocation(loc) ?? getAgentVillage(agent);
+  const reachableRoads = roads.filter(r => r.connectsVillages.includes(currentVid));
+  if (reachableRoads.length === 0) return "";
+
+  const lines = reachableRoads.map(road => {
+    const destVid = road.connectsVillages.find(v => v !== currentVid) ?? "";
+    const destName = villages.find(v => v.id === destVid)?.name ?? destVid;
+    return `  Travel to ${destName}: move_to "${road.name}" (${road.transitTicks} tick travel, costs 1 hunger)`;
+  });
+  return `Travel:\n${lines.join("\n")}`;
+}
+
+// ─── Road perception (minimal — no marketplace, no production) ─
+
+function buildRoadPerception(
+  agent: AgentName,
+  state: WorldState,
+  time: SimTime,
+  otherAgentsPresent: string[],
+  pendingMessages: string,
+  conversationSoFar: string,
+): string {
+  const eco = state.economics[agent];
+  const body = state.body[agent];
+  const location = state.agent_locations[agent];
+  const feedback = (state.action_feedback[agent] ?? []).join("\n");
+  const bodyNote = bodyPerception(body);
+  const inventoryLines = buildInventoryLines(agent, state);
+
+  const road = getRoads().find(r => r.name === location);
+  const [v1id, v2id] = road?.connectsVillages ?? [];
+  const v1Name = getVillages().find(v => v.id === v1id)?.name ?? v1id ?? "?";
+  const v2Name = getVillages().find(v => v.id === v2id)?.name ?? v2id ?? "?";
+
+  const othersStr = otherAgentsPresent.length > 0
+    ? `Others on the road: ${otherAgentsPresent.join(", ")}.`
+    : "You are alone on the road.";
+
+  return `RULE: Speech NEVER moves goods or coin. Only post_order and buy_item create real transfers. Saying "here are 4 coins" does nothing.
+
+You are ${getDisplayName(agent)}.
+Location: ${location}. ${time.timeLabel}. ${time.season.charAt(0).toUpperCase() + time.season.slice(1)}, day ${time.seasonDay}/7.
+Weather: ${state.weather}
+
+You are travelling between ${v1Name} and ${v2Name}. You will arrive at your destination next tick.
+
+${othersStr}
+${bodyNote ? bodyNote + "\n" : ""}
+Inventory: ${inventoryLines}
+Wallet: ${eco.wallet} coin
+
+${pendingMessages ? `Messages:\n${pendingMessages}\n` : ""}${feedback ? `Last tick feedback:\n${feedback}\n` : ""}${conversationSoFar ? `\nConversation so far:\n${conversationSoFar}\n` : ""}`.trim();
+}
+
+// ─── Full perception ──────────────────────────────────────────
+
 export function buildPerception(
   agent: AgentName,
   state: WorldState,
@@ -240,6 +318,11 @@ export function buildPerception(
   const eco = state.economics[agent];
   const body = state.body[agent];
   const location = state.agent_locations[agent];
+
+  // Road agents get a stripped-down perception with no marketplace/production context
+  if (isRoadLocation(location)) {
+    return buildRoadPerception(agent, state, time, otherAgentsPresent, pendingMessages, conversationSoFar);
+  }
 
   const bodyNote = bodyPerception(body);
   const hungryHint = getHungryNoFoodHint(agent, state);
@@ -351,29 +434,36 @@ ${feedback ? `Last tick feedback:\n${feedback}\n` : ""}${conversationSoFar ? `\n
 
 // ─── Prompt builder ───────────────────────────────────────────
 
-function buildPrompt(agent: AgentName, perception: string, actionSchema: string): string {
+function buildPrompt(agent: AgentName, perception: string, actionSchema: string, state: WorldState): string {
   const name = getDisplayName(agent);
   const profile = readAgentProfile(agent);
   const memory = readAgentMemory(agent);
-  const agentVillage = getAgentVillage(agent);
 
-  const villageName = getVillages().find(v => v.id === agentVillage)?.name ?? "";
-  const displayLocs = getVillageLocations(agentVillage).map(loc =>
+  // Use current physical village, not home village
+  const currentLoc = state.agent_locations[agent];
+  const onRoad = isRoadLocation(currentLoc);
+  const currentVillageId = onRoad
+    ? getAgentVillage(agent)
+    : (getVillageForLocation(currentLoc) ?? getAgentVillage(agent));
+
+  const villageName = getVillages().find(v => v.id === currentVillageId)?.name ?? "";
+  const displayLocs = onRoad ? [] : getVillageLocations(currentVillageId).map(loc =>
     villageName && loc.startsWith(`${villageName}:`) ? loc.slice(villageName.length + 1) : loc
   );
+  const locationsLine = displayLocs.length > 0 ? `Locations in the village: ${displayLocs.join(", ")}` : "";
+
+  const travelBlock = buildTravelBlock(agent, state);
 
   return `You are ${name}.
 
 ${profile}
-
-Locations in the village: ${displayLocs.join(", ")}
-
+${locationsLine ? "\n" + locationsLine : ""}
 ${memory}
 
 ---
 
 ${perception}
-
+${travelBlock ? "\n" + travelBlock + "\n" : ""}
 ${actionSchema}`;
 }
 
@@ -387,7 +477,7 @@ export async function runAgentTurn(
   const model = process.env.CHARACTER_MODEL || "haiku";
   const hasConcerns = computeVillageConcerns(context.state, context.time.tick).length > 0;
   const atMeeting = context.agentLocation === "Town Hall" && !!context.state.pending_meeting;
-  const prompt = buildPrompt(agent, perception, buildActionSchema(agent, hasConcerns, atMeeting));
+  const prompt = buildPrompt(agent, perception, buildActionSchema(agent, hasConcerns, atMeeting), context.state);
   const name = getDisplayName(agent);
 
   // Emit "agent is thinking" to frontend
@@ -412,6 +502,7 @@ export async function runAgentTurn(
     "speak", "think", "wait", "move_to", "produce", "buy_item", "post_order",
     "cancel_order", "give_item", "hire", "loan_request", "loan_repay",
     "steal", "vote", "call_meeting", "petition_meeting", "dismiss", "craft",
+    "eat",
   ]);
   const actions = (response.actions || []).map(action => {
     let sanitized = action;

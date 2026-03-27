@@ -9,6 +9,7 @@ import {
   updateAgentMemoryFromActions, updateRelationships,
 } from "./memory.js";
 import { buildPerception, buildMeetingPerception, runBatchedAgents } from "./agent-runner.js";
+import { runHarnessLocation } from "./harness.js";
 import { getLLMStats } from "./llm.js";
 import { getSounds } from "./sounds.js";
 import { deliverMessages } from "./messages.js";
@@ -306,6 +307,11 @@ async function runMeetingPhase(state: WorldState, time: SimTime): Promise<{ atte
   return { attendees: new Set(attendees), log: meetingLog };
 }
 
+// ─── Persisted across ticks for harness sounds ────────────────
+// Stores last tick's resolved actions so look_around() can report
+// sounds from adjacent locations via getSounds().
+let prevTickActions: Record<AgentName, ResolvedAction[]> = {};
+
 // ─── Core tick ────────────────────────────────────────────────
 
 export async function runTick(tick: number): Promise<void> {
@@ -533,7 +539,22 @@ export async function runTick(tick: number): Promise<void> {
       const locResults: AgentTurnResult[] = [];
       let locationRounds: unknown[] = [];
 
-      if (group.length === 1) {
+      if (process.env.USE_HARNESS === "true") {
+        // ── Harness path: each agent gets its own tool-calling loop ──
+        const results = await runHarnessLocation(group, state, time, movedThisTick, prevTickActions);
+        locResults.push(...results);
+        // Populate rounds with real per-agent action data (mirrors non-harness format)
+        locationRounds = results.map(r => ({
+          agent: r.agent,
+          toolCalls: r.historyLines ? Math.floor(r.historyLines.length / 2) : 0,
+          actions: r.actions.map(a => ({
+            type: a.type,
+            ...(a.text ? { text: a.text.slice(0, 120) } : {}),
+            ...(a.result ? { result: a.result.slice(0, 120) } : {}),
+            ...(a.location ? { location: a.location } : {}),
+          })),
+        }));
+      } else if (group.length === 1) {
         // Solo — single LLM call
         const agent = group[0]!;
         const result = await runBatchedAgents([agent], perceptions, state, time, 5, movedThisTick);
@@ -614,6 +635,9 @@ export async function runTick(tick: number): Promise<void> {
   // Include player result so production/marketplace resolvers process it
   if (playerTurnResult) allResults.push(playerTurnResult);
 
+  // Persist resolved actions for next tick's harness look_around() sounds
+  prevTickActions = Object.fromEntries(allResults.map(r => [r.agent, r.actions]));
+
   // ── 7. SOCIAL RESOLUTION ────────────────────────────────────
   // Capture from-locations before applying moves (for accurate tick log)
   const moveFromLocations: Partial<Record<AgentName, string>> = {};
@@ -655,7 +679,7 @@ export async function runTick(tick: number): Promise<void> {
 
   for (const result of allResults) {
     const others = byLocationForMemory[result.agent]?.map(a => getDisplayName(a)) ?? [];
-    updateAgentMemoryFromActions(result.agent, time, state.agent_locations[result.agent], others, result.actions);
+    updateAgentMemoryFromActions(result.agent, time, state.agent_locations[result.agent], others, result.actions, result.historyLines);
     updateRelationships(result.agent, result.actions, others);
   }
 
@@ -694,7 +718,7 @@ export async function runTick(tick: number): Promise<void> {
     weather: state.weather,
     locations: tickLocations,
     movements: allResults
-      .filter(r => r.pendingMove)
+      .filter(r => r.pendingMove && r.pendingMove !== (moveFromLocations[r.agent] ?? r.pendingMove))
       .map(r => ({ agent: r.agent, from: moveFromLocations[r.agent] ?? "", to: r.pendingMove! })),
     trades: (state.marketplaces
       ? Object.values(state.marketplaces).flatMap(m => m.history)

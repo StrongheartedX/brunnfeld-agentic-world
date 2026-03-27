@@ -156,61 +156,91 @@ function compressExperiences(entries: string[]): string[] {
   return [...compressed.slice(-5), ...recent];
 }
 
+/**
+ * Extracts a compact narrative from a harness historyLines trace.
+ * Only interaction tool calls (speak, negotiate, produce, move_to, buy_item, post_order, eat)
+ * are included — pure observation calls are skipped.
+ * Returns an empty string if no meaningful actions were taken.
+ */
+function summarizeHarnessTrace(historyLines: string[]): string {
+  const INTERACTION_RE = /^→ (speak|negotiate|produce|move_to|buy_item|post_order|eat)\(/;
+  const meaningful: string[] = [];
+
+  for (let i = 0; i < historyLines.length; i += 2) {
+    const call = historyLines[i] ?? "";
+    const result = historyLines[i + 1] ?? "";
+    if (!INTERACTION_RE.test(call)) continue;
+    const outcome = result.replace(/^← /, "").slice(0, 80);
+    if (outcome) meaningful.push(outcome);
+  }
+
+  return meaningful.join(". ");
+}
+
 export function updateAgentMemoryFromActions(
   agent: AgentName,
   time: SimTime,
   location: string,
   otherAgents: string[],
   actions: ResolvedAction[],
+  historyLines?: string[],
 ): void {
   const content = readAgentMemory(agent);
   const sections = parseMemory(content);
 
-  const parts: string[] = [];
   const timeShort = `${time.dayOfWeek} ${time.hour.toString().padStart(2, "0")}:00`;
   const othersStr = otherAgents.length > 0
     ? `. ${otherAgents.join(", ")} ${otherAgents.length === 1 ? "was" : "were"} there`
     : "";
-  parts.push(`${timeShort}. ${location}${othersStr}.`);
+  const header = `${timeShort}. ${location}${othersStr}.`;
 
-  let hasContent = false;
-  for (const action of actions) {
-    switch (action.type) {
-      case "speak":
-        parts.push(`Said: "${action.text?.substring(0, 80)}"`);
-        hasContent = true;
-        break;
-      case "think":
-        if (action.text) {
-          parts.push(action.text.substring(0, 60) + (action.text.length > 60 ? "..." : ""));
-          hasContent = true;
-        }
-        break;
-      case "move_to":
-        parts.push(`Went to ${action.location}.`); hasContent = true;
-        break;
-      case "produce":
-        if (action.result && !action.result.startsWith("[")) {
-          parts.push(action.result); hasContent = true;
-        }
-        break;
-      case "buy_item":
-      case "post_order":
-        if (action.result && !action.result.startsWith("[")) {
-          parts.push(action.result); hasContent = true;
-        }
-        break;
-      case "send_message":
-        parts.push(`Sent message to ${action.to || action.target}.`); hasContent = true;
-        break;
-      case "knock_door":
-        parts.push(`Knocked at ${action.target}'s door. ${action.result}`); hasContent = true;
-        break;
+  // If harness historyLines are available, synthesize a richer experience entry
+  if (historyLines && historyLines.length > 0) {
+    const summary = summarizeHarnessTrace(historyLines);
+    if (summary) {
+      sections.experiences.push(`${header} ${summary}`);
     }
-  }
-
-  if (hasContent) {
-    sections.experiences.push(parts.join(" "));
+  } else {
+    // Fallback: sparse action-based entry (non-harness path)
+    const parts: string[] = [header];
+    let hasContent = false;
+    for (const action of actions) {
+      switch (action.type) {
+        case "speak":
+          parts.push(`Said: "${action.text?.substring(0, 80)}"`);
+          hasContent = true;
+          break;
+        case "think":
+          if (action.text) {
+            parts.push(action.text.substring(0, 60) + (action.text.length > 60 ? "..." : ""));
+            hasContent = true;
+          }
+          break;
+        case "move_to":
+          parts.push(`Went to ${action.location}.`); hasContent = true;
+          break;
+        case "produce":
+          if (action.result && !action.result.startsWith("[")) {
+            parts.push(action.result); hasContent = true;
+          }
+          break;
+        case "buy_item":
+        case "post_order":
+          if (action.result && !action.result.startsWith("[")) {
+            parts.push(action.result); hasContent = true;
+          }
+          break;
+        case "send_message":
+          parts.push(`Sent message to ${action.to || action.target}.`); hasContent = true;
+          break;
+        case "knock_door":
+          parts.push(`Knocked at ${action.target}'s door. ${action.result}`); hasContent = true;
+          break;
+      }
+    }
+    if (hasContent) {
+      sections.experiences.push(parts.join(" "));
+    }
   }
 
   // Pin significant trade events to Important

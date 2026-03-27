@@ -7,6 +7,8 @@ export interface VillageInfo {
   id: string;
   name: string;
   agentCount: number;
+  locationTiles?: Record<string, { tx: number; ty: number }>;
+  locationTypes?: Record<string, string>;
 }
 
 export type Season = "spring" | "summer" | "autumn" | "winter";
@@ -143,4 +145,5 @@ export type SSEEvent =
   | { type: "meeting:vote"; agent: AgentName; side: "agree" | "disagree" }
   | { type: "meeting:result"; passed: boolean; agreeCount: number; law?: unknown }
   | { type: "meeting:end" }
-  | { type: "meeting:quorum_fail"; description: string; attendeeCount: number };
+  | { type: "meeting:quorum_fail"; description: string; attendeeCount: number }
+  | { type: "harness:tool"; agent: AgentName; name: string; tool: string; summary: string };

@@ -173,6 +173,7 @@ interface VillageStore {
   currentTick: number;
   latestEconomy: EconomySnapshot | null;
   streaming: Record<string, StreamEntry>;  // agent → live stream
+  agentStatus: Record<string, string>;    // agent → current harness tool summary
   orderFeed: OrderFeedEntry[];
   priceFlashes: Record<string, PriceFlash>;
   playerCreated: boolean;
@@ -216,6 +217,7 @@ export const useVillageStore = create<VillageStore>((set, get) => ({
   currentTick: 0,
   latestEconomy: null,
   streaming: {},
+  agentStatus: {},
   orderFeed: [],
   priceFlashes: {},
   pendingAnimations: [],
@@ -316,6 +318,11 @@ export const useVillageStore = create<VillageStore>((set, get) => ({
       return;
     }
 
+    if (e.type === "harness:tool") {
+      set(s => ({ agentStatus: { ...s.agentStatus, [e.agent]: e.summary } }));
+      return;
+    }
+
     if (e.type === "thinking") {
       set((s) => ({
         streaming: {
@@ -351,7 +358,8 @@ export const useVillageStore = create<VillageStore>((set, get) => ({
     if (e.type === "tick") {
       set((s) => ({
         currentTick: e.tick,
-        streaming: {},  // clear all streams on new tick
+        streaming: {},     // clear all streams on new tick
+        agentStatus: {},   // clear harness status on new tick
         world: s.world ? {
           ...s.world,
           current_tick: e.tick,
@@ -424,14 +432,9 @@ export const useVillageStore = create<VillageStore>((set, get) => ({
               } : s.world,
             }));
           }
-        } else if (world) {
-          set((s) => ({
-            world: s.world ? {
-              ...s.world,
-              agent_locations: { ...s.world.agent_locations, [e.agent]: e.location! },
-            } : s.world,
-          }));
         }
+        // Non-move actions carry an informational location (where the action happened),
+        // not a destination — do not snap agent position for speak/do/etc.
       }
       return;
     }

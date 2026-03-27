@@ -293,6 +293,7 @@ export interface AgentTurnResult {
   agent: AgentName;
   actions: ResolvedAction[];
   pendingMove?: string;
+  historyLines?: string[];
 }
 
 // ─── Time ──────────────────────────────────────────────────

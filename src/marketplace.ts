@@ -1,12 +1,18 @@
 import type { AgentName, ItemType, Marketplace, Order, Trade, WorldState, SimTime } from "./types.js";
-import { getAgentVillage } from "./world-registry.js";
+import { getAgentVillage, isRoadLocation, getVillageForLocation } from "./world-registry.js";
 import { addToInventory, removeFromInventory, unreserveInventory, feedbackToAgent } from "./inventory.js";
 import { emitSSE } from "./events.js";
 
 // ─── Per-village marketplace access ──────────────────────────
 
 export function getAgentMarketplace(agent: string, state: WorldState): Marketplace {
-  const vid = state.economics[agent]?.villageId ?? getAgentVillage(agent);
+  const currentLoc = state.agent_locations?.[agent as keyof typeof state.agent_locations];
+  let vid: string;
+  if (currentLoc && !isRoadLocation(currentLoc)) {
+    vid = getVillageForLocation(currentLoc) ?? state.economics[agent]?.villageId ?? getAgentVillage(agent);
+  } else {
+    vid = state.economics[agent]?.villageId ?? getAgentVillage(agent);
+  }
   if (state.marketplaces) return state.marketplaces[vid] ?? state.marketplace;
   return state.marketplace;
 }

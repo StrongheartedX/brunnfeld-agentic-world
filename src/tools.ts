@@ -1,5 +1,5 @@
 import type { AgentAction, AgentName, ItemType, Loan, ResolvedAction, WorldState, SimTime, StealRecord } from "./types.js";
-import { getAgentNames, getDisplayName, getAgentVillage, isValidLocation, getLocationHours, isLocationOpenByRegistry, getVillageLocations, getVillages, resolveAgentLocation } from "./world-registry.js";
+import { getAgentNames, getDisplayName, getAgentVillage, isValidLocation, getLocationHours, isLocationOpenByRegistry, getVillageLocations, getVillages, resolveAgentLocation, isRoadLocation, getRoads, getVillageForLocation } from "./world-registry.js";
 import { getAgentMarketplace } from "./marketplace.js";
 import { getHourIndex } from "./time.js";
 import { lockDoor, unlockDoor, resolveKnock } from "./doors.js";
@@ -96,10 +96,14 @@ export function resolveAction(
 
     case "move_to": {
       const rawLoc = action.location || action.text || "";
-      const targetLoc = resolveAgentLocation(agent, rawLoc);
+      // Resolve bare location names using the agent's current village, not home village
+      const currentVid = isRoadLocation(agentLocation)
+        ? undefined
+        : getVillageForLocation(agentLocation);
+      const targetLoc = resolveAgentLocation(agent, rawLoc, currentVid);
       const valid = isValidLocation(targetLoc);
       if (!valid) {
-        const vid = getAgentVillage(agent);
+        const vid = currentVid ?? getAgentVillage(agent);
         const vName = getVillages().find(v => v.id === vid)?.name ?? "";
         const localLocs = getVillageLocations(vid).map(l =>
           vName && l.startsWith(`${vName}:`) ? l.slice(vName.length + 1) : l
@@ -114,14 +118,35 @@ export function resolveAction(
       if (!isLocationOpenByRegistry(targetLoc, hourIdx)) {
         const hrs = getLocationHours(targetLoc);
         const opensStr = hrs != null ? ` (opens at ${String(6 + hrs.open).padStart(2, "0")}:00)` : "";
-        return { ...action, result: `[Can't move] ${targetLoc} is closed right now${opensStr}.`, visible: false };
+        const msg = `[Can't move] ${targetLoc} is closed right now${opensStr}.`;
+        feedbackToAgent(agent, state, msg);
+        return { ...action, result: msg, visible: false };
       }
       if (context.movedThisTick?.has(agent)) {
         feedbackToAgent(agent, state, `[Can't move] Already moved this hour. One move per hour.`);
         return { ...action, result: "", visible: false };
       }
+      const wasOnRoad = isRoadLocation(agentLocation);
       state.agent_locations[agent] = targetLoc;
       context.movedThisTick?.add(agent);
+
+      // Arriving at a road: apply hunger cost + travel feedback
+      if (isRoadLocation(targetLoc)) {
+        state.body[agent].hunger = Math.min(5, (state.body[agent].hunger ?? 0) + 1);
+        const road = getRoads().find(r => r.name === targetLoc);
+        const destVid = road?.connectsVillages.find(v => v !== currentVid);
+        const destName = getVillages().find(v => v.id === destVid)?.name ?? destVid ?? "the next village";
+        feedbackToAgent(agent, state, `[Travelling] You are on the road to ${destName}. You will arrive next tick. (+1 hunger)`);
+        return { ...action, location: targetLoc, result: `${name} sets out on the road to ${destName}.`, visible: true };
+      }
+
+      // Arriving at a village from a road
+      if (wasOnRoad) {
+        const arrivedVid = getVillageForLocation(targetLoc);
+        const arrivedName = getVillages().find(v => v.id === arrivedVid)?.name ?? targetLoc;
+        feedbackToAgent(agent, state, `[Arrived] You have arrived in ${arrivedName}.`);
+      }
+
       return { ...action, location: targetLoc, result: `${name} goes to ${targetLoc}.`, visible: true };
     }
 
@@ -175,7 +200,7 @@ export function resolveAction(
 
     // produce passes through to dedicated resolver
     case "produce":
-      return { ...action, result: "(pending economic resolution)", visible: false };
+      return { ...action, result: `${name} starts work on ${action.item ?? "goods"}. Output added at end of tick — do not post a sell order for it yet.`, visible: true };
 
     case "post_order": {
       const side = action.side;

@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import { renderVillage, hitTestLocation, screenToWorld, spawnParticle, type Camera, type ActiveAnimation } from "../canvas/renderer";
-import { locationPx, TILE_SIZE, WORLD_W, WORLD_H } from "../canvas/map";
+import { locationPx, setActiveTiles, setActiveBuildings, buildingsFromVillage, TILE_SIZE, WORLD_W, WORLD_H } from "../canvas/map";
 import { useVillageStore, AGENT_DISPLAY } from "../store";
 import type { AgentName } from "../types";
 
@@ -16,6 +16,7 @@ export default function VillageMap() {
 
   const world = useVillageStore((s) => s.world);
   const activeVillageId = useVillageStore((s) => s.activeVillageId);
+  const villages = useVillageStore((s) => s.villages);
   const selectedAgent = useVillageStore((s) => s.selectedAgent);
   const selectAgent = useVillageStore((s) => s.selectAgent);
   const feed = useVillageStore((s) => s.feed);
@@ -52,6 +53,18 @@ export default function VillageMap() {
     }
   }, [feed, world]);
 
+  // Apply village-specific tile/building data when active village changes
+  useEffect(() => {
+    const v = villages.find(v => v.id === activeVillageId);
+    if (v?.locationTiles && Object.keys(v.locationTiles).length > 0) {
+      setActiveTiles(v.locationTiles);
+      setActiveBuildings(buildingsFromVillage(v.locationTiles, v.locationTypes ?? {}));
+    } else {
+      setActiveTiles(null);     // fall back to hardcoded Brunnfeld defaults
+      setActiveBuildings(null);
+    }
+  }, [activeVillageId, villages]);
+
   // Animation loop
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -68,13 +81,14 @@ export default function VillageMap() {
       }
       ctx.clearRect(0, 0, w, h);
 
-      // Drain pending animations from store — only track Brunnfeld agents
+      // Drain pending animations from store — only track agents of the active village
       const store = useVillageStore.getState();
       const currentWorld = store.world;
+      const currentVillageId = store.activeVillageId;
       const newAnims = store.consumeAnimations();
       for (const anim of newAnims) {
         const agentVid = (currentWorld?.economics[anim.agent] as { villageId?: string } | undefined)?.villageId ?? "brunnfeld";
-        if (agentVid !== "brunnfeld") continue;
+        if (agentVid !== currentVillageId) continue;
         const from = locationPx(anim.fromLoc);
         const to = locationPx(anim.toLoc);
         const toX = to.x + TILE_SIZE / 2;
@@ -95,17 +109,17 @@ export default function VillageMap() {
         });
       }
 
-      // Filter world to Brunnfeld-only agents so other villages don't appear on the tile map
-      const brunnfeldWorld = world ? {
-        ...world,
+      // Filter world to active village's agents only
+      const filteredWorld = currentWorld ? {
+        ...currentWorld,
         agent_locations: Object.fromEntries(
-          Object.entries(world.agent_locations).filter(([a]) =>
-            ((world.economics[a] as { villageId?: string })?.villageId ?? "brunnfeld") === "brunnfeld"
+          Object.entries(currentWorld.agent_locations).filter(([a]) =>
+            ((currentWorld.economics[a] as { villageId?: string })?.villageId ?? "brunnfeld") === currentVillageId
           )
         ),
       } : null;
 
-      renderVillage(ctx, brunnfeldWorld, cameraRef.current, selectedAgent, hoveredLoc, w, h, animationsRef.current);
+      renderVillage(ctx, filteredWorld, cameraRef.current, selectedAgent, hoveredLoc, w, h, animationsRef.current);
 
       const now = performance.now();
       for (const [agent, anim] of animationsRef.current) {

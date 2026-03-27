@@ -41,6 +41,13 @@ export const MULTI_FARM_ITEMS: Partial<Record<string, string[]>> = {
   herbs:      ["Forest"],
 };
 
+/** Returns all producible items for a given skill with their input requirements and required location. */
+export function getProducibleItems(skill: string): { item: string; inputs: Record<string, number>; location: string }[] {
+  return Object.entries(RECIPES)
+    .filter(([, r]) => r.skill === skill)
+    .map(([item, r]) => ({ item, inputs: r.inputs as Record<string, number>, location: r.location }));
+}
+
 function getHiredLaborer(employer: AgentName, state: WorldState): AgentName | null {
   for (const a of getAgentNames()) {
     if (state.economics[a].hiredBy === employer) return a;

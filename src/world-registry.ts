@@ -310,10 +310,22 @@ export function isValidLocation(loc: string): boolean {
  * e.g. a Norddorf agent typing "Forest" → "Norddorf:Forest"
  * If already valid (or unresolvable), returns the input unchanged.
  */
-export function resolveAgentLocation(agent: string, loc: string): string {
+export function resolveAgentLocation(agent: string, loc: string, currentVillageId?: string): string {
   if (isValidLocation(loc)) return loc;
-  const vid = getAgentVillage(agent);
-  const vName = getConfig().villages.find(v => v.id === vid)?.name ?? "";
+
+  // Strip hallucinated village-name prefix (e.g. "Brunnfeld:Village Square" → "Village Square")
+  const cfg = getConfig();
+  for (const v of cfg.villages) {
+    if (v.name && loc.startsWith(`${v.name}:`)) {
+      const stripped = loc.slice(v.name.length + 1);
+      if (isValidLocation(stripped)) return stripped;
+      const reprefixed = `${v.name}:${stripped}`;
+      if (isValidLocation(reprefixed)) return reprefixed;
+    }
+  }
+
+  const vid = currentVillageId ?? getAgentVillage(agent);
+  const vName = cfg.villages.find(v => v.id === vid)?.name ?? "";
   if (!vName) return loc;
   const prefixed = `${vName}:${loc}`;
   return isValidLocation(prefixed) ? prefixed : loc;

@@ -103,6 +103,7 @@ const server = createServer(async (req, res) => {
         "meeting:result":     (e) => send({ type: "meeting:result",     ...(e as object) }),
         "meeting:end":        (e) => send({ type: "meeting:end",        ...(e as object) }),
         "meeting:quorum_fail":(e) => send({ type: "meeting:quorum_fail",...(e as object) }),
+        "harness:tool":       (e) => send({ type: "harness:tool",       ...(e as object) }),
       };
 
       for (const [evt, handler] of Object.entries(handlers)) {
@@ -391,6 +392,8 @@ const server = createServer(async (req, res) => {
         id: v.id,
         name: v.name,
         agentCount: v.agents.filter(a => a.id !== "player").length,
+        locationTiles: v.locationTiles ?? {},
+        locationTypes: v.locationTypes ?? {},
       }));
       headers["Content-Type"] = "application/json";
       res.writeHead(200, headers);
