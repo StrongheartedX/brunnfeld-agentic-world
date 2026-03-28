@@ -283,6 +283,8 @@ The prompt enforces "use at most 2 observation tools, then act."
 | Act | `post_order` | `{"side":"sell","item":"flour","qty":3,"price":6}` | Post a market order |
 | Act | `buy_item` | `{"item":"bread","max_price":5}` | Buy from market (must be at Village Square) |
 | Act | `eat` | `{"item":"bread","qty":1}` | Eat food from inventory |
+| Act | `hire_laborer` | `{"agent":"Pabo","wage":5}` | Pay someone here to work for you today — their output routes to your inventory |
+| Act | `quit_job` | `{}` | Quit your current job (only shown when employed) |
 | Plan | `think` | `{"text": "..."}` | Inner thought — not heard by others |
 | Plan | `done` | `{}` | End your turn |
 
@@ -382,6 +384,8 @@ Cross-village trade is possible: an agent can travel to the other village's mark
 | **Pater Markus** | priest | Town Hall | 25c | No economic role |
 
 ★ = village council member
+
+**Skillless agents** (Ida, Magda, and any generated `villager` agents) have no production recipes. They can trade, speak, and move — but to produce anything they must be hired by a skilled agent via `hire_laborer`. When hired, they inherit their employer's skill, go to the employer's work location, and produce — with output routing directly to the employer's inventory.
 
 **Pre-existing acquaintances** (day 1): Hans↔Heinrich, Gerda↔Anselm, Volker↔Wulf, Friedrich↔Rupert, Dieter↔Rupert, Dieter↔Magda, Liesel↔Otto, Otto↔Pater Markus
 
