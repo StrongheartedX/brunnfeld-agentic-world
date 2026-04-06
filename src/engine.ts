@@ -110,24 +110,38 @@ function resolveHiredWages(state: WorldState, time: SimTime): void {
 
 function enforceOpeningHours(state: WorldState, time: SimTime): void {
   const hourIdx = getHourIndex(time);
-  // Check for active marketplace_hours law
+  // Check for active marketplace_hours and curfew laws
   let marketplaceCloseIdx: number | undefined;
+  let curfewIdx: number | undefined;
   for (const law of (state.active_laws ?? [])) {
     if (law.type === "marketplace_hours" && law.value != null) {
       marketplaceCloseIdx = law.value;
     }
+    if (law.type === "curfew" && law.value != null) {
+      curfewIdx = law.value;
+    }
   }
+  const CURFEW_EXEMPT = new Set(["Tavern", "Town Hall"]);
   for (const agent of getAgentNames()) {
     const loc = state.agent_locations[agent];
+    const home = state.economics[agent]?.homeLocation;
+    // Marketplace hours law
     if (loc === "Village Square" && marketplaceCloseIdx != null) {
       if (hourIdx >= marketplaceCloseIdx) {
-        state.agent_locations[agent] = state.economics[agent].homeLocation;
+        state.agent_locations[agent] = home;
+      }
+      continue;
+    }
+    // Curfew law — send home unless at home, tavern, or town hall
+    if (curfewIdx != null && hourIdx >= curfewIdx) {
+      if (loc !== home && !CURFEW_EXEMPT.has(loc) && !loc.endsWith(":Tavern") && !loc.endsWith(":Town Hall")) {
+        state.agent_locations[agent] = home;
+        feedbackToAgent(agent, state, `[Curfew] Village law requires you home by ${String(6 + curfewIdx).padStart(2, "0")}:00.`);
       }
       continue;
     }
     if (!isLocationOpen(loc, hourIdx)) {
-      // Send them home
-      state.agent_locations[agent] = state.economics[agent].homeLocation;
+      state.agent_locations[agent] = home;
     }
   }
 }
@@ -164,6 +178,27 @@ function applyLawEffect(law: Law, state: WorldState, time: SimTime): void {
       break;
     case "general_rule":
       // No mechanical effect — persists in active_laws for perception
+      break;
+    case "grant_tools":
+      if (law.grantedTo && law.grantedTools) {
+        console.log(`  ⚖ ${getDisplayName(law.grantedTo)} granted [${law.grantedTools.join(", ")}]`);
+      }
+      break;
+    case "curfew":
+      // Stored in active_laws; enforceOpeningHours reads it at runtime
+      if (law.value != null) {
+        console.log(`  ⚖ Curfew set: agents must be home by ${String(6 + law.value).padStart(2, "0")}:00`);
+      }
+      break;
+    case "trade_restriction":
+      console.log(`  ⚖ Trade restriction: ${law.description}`);
+      break;
+    case "repeal":
+      if (law.repealsLawId) {
+        const repealed = state.active_laws.find(l => l.id === law.repealsLawId);
+        state.active_laws = state.active_laws.filter(l => l.id !== law.repealsLawId);
+        console.log(`  ⚖ Repealed: ${repealed?.description ?? law.repealsLawId}`);
+      }
       break;
   }
 }
@@ -303,6 +338,16 @@ async function runMeetingPhase(state: WorldState, time: SimTime, villageId: stri
       value: proposalValue,
       target: mtg.target,
     };
+    // Populate type-specific fields
+    if (mtg.agendaType === "grant_tools" && mtg.target) {
+      law.grantedTo = mtg.target;
+      law.grantedTools = ["fine_agent", "seize_goods"];
+    }
+    if (mtg.agendaType === "repeal") {
+      // Find law ID mentioned in proposal text or target field
+      const repealTarget = mtg.target ?? state.active_laws.find(l => proposalText.includes(l.id))?.id;
+      if (repealTarget) law.repealsLawId = repealTarget;
+    }
     state.active_laws.push(law);
     applyLawEffect(law, state, time);
     lawText = proposalText;

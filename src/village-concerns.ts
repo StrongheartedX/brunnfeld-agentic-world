@@ -65,6 +65,16 @@ export function computeVillageConcerns(state: WorldState, currentTick: number): 
     }
   }
 
+  // ── Theft incidents ──────────────────────────────────────
+  const recentThefts = (state.violations_log ?? [])
+    .filter(v => v.lawId === "theft" && currentTick - v.tick <= 32);
+  if (recentThefts.length > 0) {
+    const theftLines = recentThefts.slice(-3).map(v =>
+      `${getDisplayName(v.agent)}: ${v.action}`
+    ).join("; ");
+    concerns.push(`[Village concern] Theft reported: ${theftLines}. Consider granting enforcement tools or calling a meeting.`);
+  }
+
   // ── Recent petitions (past 1 in-game day = 16 ticks) ────
   const recentPetitions = (state.pending_petitions ?? []).filter(p => currentTick - p.tick <= 16);
   for (const p of recentPetitions) {

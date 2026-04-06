@@ -19,6 +19,7 @@ export function readWorldState(): WorldState {
   const state = JSON.parse(readFileSync(join(DATA_DIR, "world_state.json"), "utf-8")) as WorldState;
   state.loans ??= [];
   state.caughtStealing ??= {};
+  state.violations_log ??= [];
   state.active_laws ??= [];
   state.banned ??= {};
   state.tax_rate ??= 0.10;

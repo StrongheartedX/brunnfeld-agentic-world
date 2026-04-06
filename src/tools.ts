@@ -43,9 +43,10 @@ export function buildActionSchema(
   let schema = CORE_ACTION_SCHEMA;
   if (atMeeting) {
     schema += `\n- propose_rule: Propose a rule for the vote. Fields: text (the rule), value? (number, e.g. 0.15 for tax rate).`;
+    schema += `\n- propose_repeal: Propose repealing an existing law. Fields: law_id (the law to repeal), text (why).`;
     schema += `\n- vote: Cast your vote. Fields: side ("agree"|"disagree").`;
   } else if (agent === getVillageElder(getAgentVillage(agent)) && hasConcerns) {
-    schema += `\n- call_meeting: Call a village meeting for next dawn. Fields: agenda_type ("tax_change"|"marketplace_hours"|"banishment"|"general_rule"), text (the agenda), target? (first name, banishment only).`;
+    schema += `\n- call_meeting: Call a village meeting for next dawn. Fields: agenda_type ("tax_change"|"marketplace_hours"|"banishment"|"general_rule"|"grant_tools"|"curfew"|"trade_restriction"|"repeal"), text (the agenda), target? (first name, for banishment/grant_tools).`;
   } else if (agent !== getVillageElder(getAgentVillage(agent)) && hasConcerns) {
     schema += `\n- petition_meeting: Ask Otto to call a village meeting. Fields: text (what it should address).`;
   }
@@ -205,6 +206,20 @@ export function resolveAction(
       const quantity = action.quantity != null ? Number(action.quantity) : undefined;
       const price = action.price != null ? Number(action.price) : undefined;
 
+      // Check trade restriction laws
+      if (item) {
+        const hourIdx = getHourIndex(time);
+        const tradeBlock = (state.active_laws ?? []).find(l =>
+          l.type === "trade_restriction" &&
+          (!l.restrictedItem || l.restrictedItem === item) &&
+          (!l.restrictedHours || (hourIdx >= l.restrictedHours[0] && hourIdx <= l.restrictedHours[1]))
+        );
+        if (tradeBlock) {
+          state.violations_log.push({ tick: time.tick, agent, lawId: tradeBlock.id, action: "post_order", blocked: true });
+          return { ...action, result: `[Blocked by law] ${tradeBlock.description}`, visible: false };
+        }
+      }
+
       if (!side || (side !== "sell" && side !== "buy") || !item || !quantity || !price || quantity <= 0 || price <= 0) {
         feedbackToAgent(agent, state, `[Can't do that] post_order requires side ("sell" or "buy"), item, quantity, price.`);
         return { ...action, result: `[Can't do that] post_order requires side ("sell" or "buy"), item, quantity, price.`, visible: false };
@@ -281,6 +296,19 @@ export function resolveAction(
       const maxPrice = action.max_price != null ? Number(action.max_price) : undefined;
       if (!item || maxPrice == null) {
         return { ...action, result: "[Can't do that] buy_item requires item and max_price.", visible: false };
+      }
+      // Check trade restriction laws
+      {
+        const hourIdx = getHourIndex(time);
+        const tradeBlock = (state.active_laws ?? []).find(l =>
+          l.type === "trade_restriction" &&
+          (!l.restrictedItem || l.restrictedItem === item) &&
+          (!l.restrictedHours || (hourIdx >= l.restrictedHours[0] && hourIdx <= l.restrictedHours[1]))
+        );
+        if (tradeBlock) {
+          state.violations_log.push({ tick: time.tick, agent, lawId: tradeBlock.id, action: "buy_item", blocked: true });
+          return { ...action, result: `[Blocked by law] ${tradeBlock.description}`, visible: false };
+        }
       }
       const currentLoc = state.agent_locations[agent];
       // Allow buying at any "square"-type location (covers "Village Square", "Norddorf:Village Square", etc.)
@@ -447,6 +475,11 @@ export function resolveAction(
       } else {
         if (!state.caughtStealing[agent]) state.caughtStealing[agent] = [];
         state.caughtStealing[agent]!.push({ from: targetAgent, item: stealItem });
+        state.violations_log.push({
+          tick: time.tick, agent, lawId: "theft",
+          action: `caught stealing ${stealItem} from ${victimDisplayName}`,
+          blocked: false,
+        });
         feedbackToAgent(
           targetAgent, state,
           `You catch ${name} trying to steal your ${stealItem}!`
@@ -514,6 +547,25 @@ export function resolveAction(
         return { ...action, result: `[Can't do that] propose_rule requires a text description.`, visible: false };
       }
       return { ...action, result: `${name} proposes: "${action.text}"`, visible: true };
+    }
+
+    case "propose_repeal": {
+      if (agentLocation !== getVillageTownHall(getAgentVillage(agent))) {
+        return { ...action, result: `[Can't do that] propose_repeal is only valid at the Town Hall during a meeting.`, visible: false };
+      }
+      if (!state.pending_meetings[getAgentVillage(agent)]) {
+        return { ...action, result: `[Can't do that] No meeting is in progress.`, visible: false };
+      }
+      const lawId = action.target ?? action.order_id;
+      if (!lawId) {
+        return { ...action, result: `[Can't do that] propose_repeal requires law_id.`, visible: false };
+      }
+      const targetLaw = state.active_laws.find(l => l.id === lawId);
+      if (!targetLaw) {
+        const lawList = state.active_laws.map(l => `${l.id}: "${l.description}"`).join("; ");
+        return { ...action, result: `[Can't do that] No law with id "${lawId}". Active laws: ${lawList || "none"}`, visible: false };
+      }
+      return { ...action, result: `${name} proposes repealing: "${targetLaw.description}" (${lawId})`, visible: true };
     }
 
     case "vote": {

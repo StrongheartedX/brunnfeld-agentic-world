@@ -224,10 +224,14 @@ export interface StealRecord {
 
 // ─── Governance ────────────────────────────────────────────
 
+export type AgendaType =
+  | "tax_change" | "marketplace_hours" | "banishment" | "general_rule"
+  | "grant_tools" | "curfew" | "trade_restriction" | "repeal";
+
 export interface PendingMeeting {
   villageId: string;
   scheduledTick: number;
-  agendaType: "tax_change" | "marketplace_hours" | "banishment" | "general_rule";
+  agendaType: AgendaType;
   description: string;
   target?: AgentName;
   calledAtTick: number;
@@ -235,11 +239,27 @@ export interface PendingMeeting {
 
 export interface Law {
   id: string;
-  type: "tax_change" | "marketplace_hours" | "banishment" | "general_rule";
+  type: AgendaType;
   description: string;
   passedTick: number;
   value?: number;
   target?: AgentName;
+  // grant_tools: which tools granted to whom
+  grantedTools?: string[];
+  grantedTo?: AgentName;
+  // trade_restriction: what's blocked and when
+  restrictedItem?: string;
+  restrictedHours?: [number, number];
+  // repeal: which law this removes
+  repealsLawId?: string;
+}
+
+export interface Violation {
+  tick: number;
+  agent: AgentName;
+  lawId: string;
+  action: string;
+  blocked: boolean;
 }
 
 // ─── Action Types ──────────────────────────────────────────
@@ -250,7 +270,8 @@ export type AgentActionType =
   | "send_message" | "leave_note" | "read"
   | "produce" | "eat"
   | "post_order" | "buy_item" | "cancel_order"
-  | "hire" | "lend_coin" | "give_coin" | "steal" | "call_meeting" | "propose_rule" | "vote";
+  | "hire" | "lend_coin" | "give_coin" | "steal" | "call_meeting" | "propose_rule" | "vote"
+  | "propose_repeal" | "fine_agent" | "seize_goods";
 
 export interface AgentAction {
   type: AgentActionType;
@@ -347,6 +368,7 @@ export interface WorldState {
   active_laws: Law[];
   banned: Partial<Record<AgentName, number>>;
   tax_rate: number;
+  violations_log: Violation[];
 
   // Multi-village: per-village marketplaces (absent = single-village mode using `marketplace`)
   marketplaces?: Record<string, Marketplace>;

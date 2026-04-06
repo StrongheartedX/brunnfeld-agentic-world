@@ -88,8 +88,29 @@ function getVillageLaws(state: WorldState, time: SimTime): string {
       const untilDay = Math.ceil(untilTick / 16);
       return `- ${getDisplayName(law.target ?? "")} banished until day ${untilDay}`;
     }
-    return `- ${law.description} (passed day ${day})`;
+    if (law.type === "grant_tools" && law.grantedTo && law.grantedTools) {
+      return `- ${getDisplayName(law.grantedTo)} granted [${law.grantedTools.join(", ")}] (${law.id}, passed day ${day})`;
+    }
+    if (law.type === "curfew" && law.value != null) {
+      return `- Curfew: home by ${String(6 + law.value).padStart(2, "0")}:00 (${law.id}, passed day ${day})`;
+    }
+    if (law.type === "trade_restriction") {
+      return `- Trade restriction: ${law.description} (${law.id}, passed day ${day})`;
+    }
+    return `- ${law.description} (${law.id}, passed day ${day})`;
   });
+
+  // Show recent violations (last 16 ticks) to elder
+  const recentViolations = (state.violations_log ?? [])
+    .filter(v => time.tick - v.tick <= 16)
+    .slice(-5);
+  if (recentViolations.length > 0) {
+    lines.push("Recent violations:");
+    for (const v of recentViolations) {
+      lines.push(`  ${getDisplayName(v.agent)}: ${v.action}${v.blocked ? " (blocked)" : ""}`);
+    }
+  }
+
   return `\nVillage Laws:\n${lines.join("\n")}`;
 }
 

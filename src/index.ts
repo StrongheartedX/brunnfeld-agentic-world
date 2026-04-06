@@ -148,6 +148,7 @@ function initWorldState(): WorldState {
     production_log: [],
     loans: [],
     caughtStealing: {},
+    violations_log: [],
     // Governance
     pending_meetings: {},
     active_laws: [],

@@ -681,6 +681,16 @@ function handleGiveCoin(args: Record<string, unknown>, config: HarnessToolConfig
   return { text: resolved.result, isInteraction: true, executedAction: resolved };
 }
 
+function handleSteal(args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
+  const resolved = resolveAction({
+    type: "steal",
+    target: args.target as string,
+    item: args.item as string,
+  } as AgentAction, makeContext(config));
+  config.executedActions.push(resolved);
+  return { text: resolved.result, isInteraction: false, executedAction: resolved };
+}
+
 function handleCancelOrder(args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
   const resolved = resolveAction({
     type: "cancel_order",
@@ -690,7 +700,99 @@ function handleCancelOrder(args: Record<string, unknown>, config: HarnessToolCon
   return { text: resolved.result, isInteraction: false, executedAction: resolved };
 }
 
-// ─── Tool registry ──────────���─────────────────────────────────
+// ─── Governance tool handlers (only available when granted by assembly) ───
+
+function handleFineAgent(args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
+  const targetName = ((args.target as string) ?? "").toLowerCase();
+  const amount = Math.max(0, Math.floor(Number(args.amount ?? 0)));
+  const reason = (args.reason as string) ?? "no reason given";
+
+  if (!amount) return { text: "[Can't fine] Specify an amount.", isInteraction: false };
+
+  const all = Object.keys(config.worldState.economics);
+  const target = all.find(a => getDisplayName(a).toLowerCase() === targetName || a === targetName) as AgentName | undefined;
+  if (!target) return { text: `[Can't fine] No agent named "${args.target}".`, isInteraction: false };
+
+  const loc = config.worldState.agent_locations[config.agentId];
+  if (config.worldState.agent_locations[target] !== loc) {
+    return { text: `[Can't fine] ${getDisplayName(target)} is not here.`, isInteraction: false };
+  }
+
+  const targetEco = config.worldState.economics[target];
+  const actual = Math.min(amount, targetEco.wallet);
+  targetEco.wallet -= actual;
+
+  // Fine goes to village elder's treasury
+  const villageId = getAgentVillage(config.agentId);
+  const elder = getVillageElder(villageId);
+  if (elder && config.worldState.economics[elder]) {
+    config.worldState.economics[elder].wallet += actual;
+  }
+
+  config.worldState.violations_log.push({
+    tick: config.time.tick,
+    agent: target,
+    lawId: "fine",
+    action: `fined ${actual}c: ${reason}`,
+    blocked: false,
+  });
+
+  feedbackToAgent(target, config.worldState, `${getDisplayName(config.agentId)} fined you ${actual} coin. Reason: ${reason}`);
+
+  const text = `${getDisplayName(config.agentId)} fines ${getDisplayName(target)} ${actual} coin. Reason: ${reason}`;
+  const resolved: ResolvedAction = { type: "fine_agent", target, text: reason, result: text, visible: true };
+  config.executedActions.push(resolved);
+  emitSSE("agent:action", { agent: config.agentId, actionType: "fine_agent", text: reason, result: text, location: loc });
+  return { text, isInteraction: true, executedAction: resolved };
+}
+
+function handleSeizeGoods(args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
+  const targetName = ((args.target as string) ?? "").toLowerCase();
+  const item = (args.item as string) ?? "";
+  const qty = Math.max(1, Math.floor(Number(args.qty ?? args.quantity ?? 1)));
+  const reason = (args.reason as string) ?? "no reason given";
+
+  const all = Object.keys(config.worldState.economics);
+  const target = all.find(a => getDisplayName(a).toLowerCase() === targetName || a === targetName) as AgentName | undefined;
+  if (!target) return { text: `[Can't seize] No agent named "${args.target}".`, isInteraction: false };
+
+  const loc = config.worldState.agent_locations[config.agentId];
+  if (config.worldState.agent_locations[target] !== loc) {
+    return { text: `[Can't seize] ${getDisplayName(target)} is not here.`, isInteraction: false };
+  }
+
+  const targetEco = config.worldState.economics[target];
+  const available = getInventoryQty(targetEco.inventory, item as ItemType);
+  if (available <= 0) return { text: `[Can't seize] ${getDisplayName(target)} has no ${item}.`, isInteraction: false };
+
+  const actual = Math.min(qty, available);
+  removeFromInventory(targetEco.inventory, item as ItemType, actual);
+  addToInventory(config.worldState.economics[config.agentId].inventory, item as ItemType, actual);
+
+  config.worldState.violations_log.push({
+    tick: config.time.tick,
+    agent: target,
+    lawId: "seizure",
+    action: `${actual}x ${item} seized: ${reason}`,
+    blocked: false,
+  });
+
+  feedbackToAgent(target, config.worldState, `${getDisplayName(config.agentId)} seized ${actual} ${item} from you. Reason: ${reason}`);
+
+  const text = `${getDisplayName(config.agentId)} seizes ${actual} ${item} from ${getDisplayName(target)}. Reason: ${reason}`;
+  const resolved: ResolvedAction = { type: "seize_goods", target, text: reason, result: text, visible: true };
+  config.executedActions.push(resolved);
+  emitSSE("agent:action", { agent: config.agentId, actionType: "seize_goods", text: reason, result: text, location: loc });
+  return { text, isInteraction: true, executedAction: resolved };
+}
+
+// Governance tools — separate from ALL_TOOL_DEFS, injected dynamically by assembly vote
+const GOVERNANCE_TOOL_DEFS: ToolDef[] = [
+  { name: "fine_agent",  description: "Fine someone present (deducts coin, goes to village treasury)", argsHint: '{"target": "Gerard", "amount": 5, "reason": "violated curfew"}' },
+  { name: "seize_goods", description: "Confiscate items from someone present",                        argsHint: '{"target": "Gerard", "item": "wheat", "qty": 3, "reason": "unpaid debt"}' },
+];
+
+// ─── Tool registry ──────────────────────────────────────────
 
 type ToolHandler = (args: Record<string, unknown>, config: HarnessToolConfig) => ToolResult;
 
@@ -709,7 +811,10 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   quit_job:       handleQuitJob,
   send_message:   handleSendMessage,
   give_coin:      handleGiveCoin,
+  steal:          handleSteal,
   cancel_order:   handleCancelOrder,
+  fine_agent:     handleFineAgent,
+  seize_goods:    handleSeizeGoods,
   done:           () => ({ text: "Turn ended.", isInteraction: false }),
 };
 
@@ -726,6 +831,7 @@ const ALL_TOOL_DEFS: ToolDef[] = [
   { name: "eat",            description: "Eat food from your inventory",                        argsHint: '{"item": "bread", "qty": 1}' },
   { name: "send_message",   description: "Send a written message to someone (delivered next tick)", argsHint: '{"to": "Rudolf", "text": "..."}' },
   { name: "give_coin",      description: "Give coin to someone here",                           argsHint: '{"to": "Rudolf", "amount": 5}' },
+  { name: "steal",          description: "Steal an item from someone here. You may be caught.",  argsHint: '{"target": "Gerard", "item": "bread"}' },
   { name: "cancel_order",   description: "Cancel your marketplace order",                       argsHint: '{"order_id": "ord_123"}' },
   { name: "hire_laborer",   description: "Pay someone here to work for you today (output goes to you)", argsHint: '{"agent": "Pabo", "wage": 5}' },
   { name: "quit_job",       description: "Quit your current job and stop working for your employer", argsHint: "{}" },
@@ -746,14 +852,29 @@ export function getToolsForAgent(
   const eco = worldState.economics[agentId];
   const isHired = !!eco?.hiredBy;
 
-  return ALL_TOOL_DEFS.filter(t => {
+  const filtered = ALL_TOOL_DEFS.filter(t => {
     if (t.name === "assess_person" && acquaintances.length === 0) return false;
     if (t.name === "negotiate" && presentOthers.length === 0) return false;
     if (t.name === "speak" && presentOthers.length === 0) return false;
+    if (t.name === "steal" && presentOthers.length === 0) return false;
     if (t.name === "hire_laborer" && presentOthers.length === 0) return false;
     if (t.name === "quit_job" && !isHired) return false;
     return true;
   });
+
+  // Inject governance tools granted by assembly vote
+  const grantedToolNames = new Set<string>();
+  for (const law of worldState.active_laws ?? []) {
+    if (law.type === "grant_tools" && law.grantedTo === agentId && law.grantedTools) {
+      for (const t of law.grantedTools) grantedToolNames.add(t);
+    }
+  }
+  if (grantedToolNames.size > 0 && presentOthers.length > 0) {
+    const granted = GOVERNANCE_TOOL_DEFS.filter(t => grantedToolNames.has(t.name));
+    return [...filtered, ...granted];
+  }
+
+  return filtered;
 }
 
 export function executeToolCall(
@@ -801,6 +922,9 @@ export function getToolSummary(toolName: string, args: Record<string, unknown>):
     send_message:   a => `messaging ${String(a.to ?? "someone")}`,
     give_coin:      a => `giving ${String(a.amount ?? "?")}c to ${String(a.to ?? "someone")}`,
     cancel_order:   a => `cancelling order ${String(a.order_id ?? "?")}`,
+    steal:          a => `stealing ${String(a.item ?? "something")} from ${String(a.target ?? "someone")}`,
+    fine_agent:     a => `fining ${String(a.target ?? "someone")} ${String(a.amount ?? "?")}c`,
+    seize_goods:    a => `seizing ${String(a.item ?? "goods")} from ${String(a.target ?? "someone")}`,
     done:           () => "finishing turn",
   };
   return s[toolName]?.(args) ?? toolName;
