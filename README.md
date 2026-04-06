@@ -315,28 +315,28 @@ CHARACTER_MODEL=haiku    # or any OpenRouter model ID
 ```
 Brunnfeld
 
-┌─────────────────────────────────────────────┐
+┌──────────────────────────────────────────────┐
 │  Resources    │  Forest · Mine               │
 │               │  Farm 1 · Farm 2 · Farm 3    │
-├───────────────┼─────────────────────────────┤
+├───────────────┼──────────────────────────────┤
 │  Production   │  Mill (7am–4pm)              │
 │               │  Bakery (6am–2pm)            │
 │               │  Forge (7am–4pm)             │
 │               │  Carpenter Shop (7am–4pm)    │
 │               │  Seamstress Cottage          │
 │               │  Healer's Hut (7am–5pm)      │
-├───────────────┼─────────────────────────────┤
+├───────────────┼──────────────────────────────┤
 │  Commerce     │  Village Square (always)     │
 │               │  Tavern (10am–9pm)           │
-├───────────────┼─────────────────────────────┤
+├───────────────┼──────────────────────────────┤
 │  Commerce     │  Merchant Camp (caravan only)│
-├───────────────┼─────────────────────────────┤
+├───────────────┼──────────────────────────────┤
 │  Governance   │  Town Hall                   │
 │               │  Elder's House               │
 │               │  Prison                      │
-├───────────────┼─────────────────────────────┤
+├───────────────┼──────────────────────────────┤
 │  Residential  │  Cottages 1–9                │
-└───────────────┴─────────────────────────────┘
+└───────────────┴──────────────────────────────┘
 
 All trade happens at Village Square.
 Non-adjacent moves route through Village Square (2 ticks).
