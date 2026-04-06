@@ -4,7 +4,9 @@ import { createLocationContext } from "./location-context.js";
 import { callClaudeWithPrefix } from "./llm.js";
 import { emitSSE } from "./events.js";
 import { readAgentProfile, readAgentMemory } from "./memory.js";
-import { getDisplayName } from "./world-registry.js";
+import { getDisplayName, getAgentVillage, getVillages, getVillageTownHall } from "./world-registry.js";
+import { deliverMessages } from "./messages.js";
+import { tickToTime } from "./time.js";
 import {
   getToolsForAgent, executeToolCall, formatToolsForPrompt, getToolSummary,
   type HarnessToolConfig,
@@ -48,30 +50,55 @@ function buildSeedContext(config: HarnessConfig, displayName: string): string {
     ? (worldState.economics[eco.hiredBy]?.workLocation ?? "")
     : (eco?.workLocation ?? "");
 
+  const villageId = getAgentVillage(agentId);
+  const villageName = getVillages().find(v => v.id === villageId)?.name ?? "the village";
+
   const lines = [
-    `You are ${displayName}, a ${skill} in Brunnfeld.`,
+    `You are ${displayName}, a ${skill} in ${villageName}.`,
     `Location: ${loc} | Time: ${time.timeLabel} | ${time.dayOfWeek}, ${time.season}`,
     `Hunger: ${body?.hunger ?? 0}/5 | Energy: ${body?.energy ?? 5}/10`,
   ];
 
+  // Weather + events
+  if (worldState.weather) lines.push(`Weather: ${worldState.weather}`);
+  for (const ev of worldState.active_events) lines.push(`Event: ${ev.description}`);
+
   // Anchor skilled agents to their work location during work hours
   if (workLoc) {
     if (workLoc === loc) {
-      if (skill !== "villager" && time.hour >= 6 && time.hour <= 15) {
-        lines.push(`You are at your work location. PRODUCE — call produce() now unless hunger ≥ 3.`);
-      } else {
-        lines.push(`You are at your work location.`);
-      }
+      lines.push(`You are at your work location.`);
     } else {
       lines.push(`Your work location is ${workLoc}.`);
       if (time.hour >= 6 && time.hour <= 15) {
-        lines.push(`It is work hours — go to ${workLoc} to work unless you have urgent needs (hunger ≥ 3).`);
+        lines.push(`It is work hours.`);
       }
     }
   }
 
   if ((body?.hunger ?? 0) >= 3) lines.push(`⚠ HUNGRY — find food before you starve.`);
   if ((body?.energy ?? 5) <= 2) lines.push(`⚠ EXHAUSTED — low energy limits your tool calls.`);
+
+  // Pending meeting for this village
+  const mtg = worldState.pending_meetings[villageId];
+  if (mtg && time.tick < mtg.scheduledTick) {
+    const townHall = getVillageTownHall(villageId);
+    const meetingTime = tickToTime(mtg.scheduledTick);
+    lines.push(`Village meeting: "${mtg.description}" at ${townHall} on ${meetingTime.timeLabel}. Be there.`);
+  }
+
+  // Action feedback (meeting notices, production results, trade confirmations, etc.)
+  const feedback = worldState.action_feedback[agentId] ?? [];
+  if (feedback.length > 0) {
+    lines.push("--- Notices ---");
+    for (const f of feedback.slice(-5)) lines.push(f);
+  }
+
+  // Pending messages (from send_message)
+  const pendingMessages = deliverMessages(worldState, agentId, time.tick);
+  if (pendingMessages) {
+    lines.push("--- Messages ---");
+    lines.push(pendingMessages);
+  }
 
   return lines.join("\n");
 }

@@ -436,7 +436,7 @@ function memoryStub(displayName: string): string {
 // ─── Build 1-village default world ───────────────────────────
 
 function buildDefaultWorldConfig(): WorldConfig {
-  const agents: AgentConfig[] = [...AGENT_NAMES, "player"].map(id => {
+  const agents: AgentConfig[] = [...AGENT_NAMES].map(id => {
     const skill = AGENT_SKILLS[id] ?? "none";
     const SKILL_DESC: Record<string, string> = {
       hans: "a farmer", ida: "a woman from the cottages", konrad: "a cattle farmer",
@@ -445,7 +445,7 @@ function buildDefaultWorldConfig(): WorldConfig {
       liesel: "the tavern keeper", sybille: "the village healer", friedrich: "a woodcutter",
       otto: "the village elder", pater_markus: "the village priest",
       dieter: "a miner", magda: "a villager", heinrich: "a farmer",
-      elke: "the seamstress", rupert: "a miner", player: "a newcomer to the village",
+      elke: "the seamstress", rupert: "a miner",
     };
     return {
       id,
@@ -478,7 +478,7 @@ function buildDefaultWorldConfig(): WorldConfig {
 }
 
 function buildDefaultWorldState(): WorldState {
-  const allAgents = [...AGENT_NAMES, "player"];
+  const allAgents = [...AGENT_NAMES];
   const emptyRecord = <T>(fn: (a: string) => T): Record<string, T> =>
     Object.fromEntries(allAgents.map(a => [a, fn(a)]));
 
@@ -497,7 +497,7 @@ function buildDefaultWorldState(): WorldState {
       liesel: "Tavern", sybille: "Healer's Hut", friedrich: "Cottage 7",
       otto: "Elder's House", pater_markus: "Town Hall",
       dieter: "Cottage 8", magda: "Cottage 8", heinrich: "Cottage 1",
-      elke: "Seamstress Cottage", rupert: "Cottage 3", player: "Village Square",
+      elke: "Seamstress Cottage", rupert: "Cottage 3",
     },
 
     body: {
@@ -520,7 +520,6 @@ function buildDefaultWorldState(): WorldState {
       heinrich:     { hunger: 1, energy: 9, sleep_quality: "good" },
       elke:         { hunger: 1, energy: 8, sleep_quality: "fair" },
       rupert:       { hunger: 2, energy: 9, sleep_quality: "good" },
-      player:       { hunger: 0, energy: 8, sleep_quality: "good" },
     },
 
     economics: {
@@ -543,7 +542,6 @@ function buildDefaultWorldState(): WorldState {
       heinrich:     { wallet: 25, inventory: { items: [{ type: "wheat", quantity: 6 }, { type: "eggs", quantity: 3 }] }, tool: { type: "iron_tools", durability: 55 }, skill: "farmer",     homeLocation: "Cottage 1",        workLocation: "Farm 1",           workSchedule: { open: 6,  close: 16 } },
       elke:         { wallet: 30, inventory: { items: [{ type: "cloth", quantity: 3 }] }, tool: null, skill: "seamstress", homeLocation: "Seamstress Cottage", workLocation: "Seamstress Cottage", workSchedule: { open: 7, close: 16 } },
       rupert:       { wallet: 20, inventory: { items: [{ type: "iron_ore", quantity: 3 }, { type: "coal", quantity: 2 }] }, tool: { type: "iron_tools", durability: 80 }, skill: "miner",      homeLocation: "Cottage 3",        workLocation: "Mine",             workSchedule: { open: 7,  close: 17 } },
-      player:       { wallet: 0,  inventory: { items: [] }, tool: null, skill: "none",     homeLocation: "Village Square",   workLocation: "Village Square",   workSchedule: { open: 6,  close: 21 } },
     },
 
     marketplace: emptyMarketplace(),
@@ -565,7 +563,7 @@ function buildDefaultWorldState(): WorldState {
       liesel: ["otto", "pater_markus"], sybille: [], friedrich: ["rupert"],
       otto: ["pater_markus", "liesel"], pater_markus: ["otto"],
       dieter: ["rupert"], magda: ["dieter"], heinrich: ["hans"],
-      elke: [], rupert: ["dieter", "friedrich"], player: [],
+      elke: [], rupert: ["dieter", "friedrich"],
     },
 
     economy_snapshots: [],
@@ -573,12 +571,10 @@ function buildDefaultWorldState(): WorldState {
     production_log: [],
     loans: [],
     caughtStealing: {},
-    pending_meeting: undefined,
+    pending_meetings: {},
     active_laws: [],
     banned: {},
     tax_rate: 0.10,
-    player_created: false,
-    pending_player_actions: [],
   };
 }
 
@@ -626,18 +622,6 @@ function buildGeneratedWorldConfig(numVillages: number, agentsPerVillage: number
       workLocation: s.workLocation,
       description: s.description,
     }));
-
-    // Add player to first village
-    if (isDefault) {
-      agents.push({
-        id: "player",
-        displayName: "You",
-        skill: "none",
-        homeLocation: "Village Square",
-        workLocation: "Village Square",
-        description: "a newcomer to the village",
-      });
-    }
 
     const locationTilesRaw = { ...LOCATION_TILES };
     const locationTiles: Record<string, { tx: number; ty: number }> = isDefault
@@ -709,22 +693,6 @@ function buildGeneratedWorldState(config: WorldConfig, rng: () => number): World
     marketplaces[village.id] = emptyMarketplace();
 
     for (const agent of village.agents) {
-      if (agent.id === "player") {
-        agent_locations["player"] = village.name === "Brunnfeld" ? "Village Square" : prefixLoc("Village Square", village.name);
-        body["player"] = { hunger: 0, energy: 8, sleep_quality: "good" };
-        economics["player"] = {
-          wallet: 0, inventory: { items: [] }, tool: null,
-          skill: "none", homeLocation: agent.homeLocation,
-          workLocation: agent.workLocation,
-          workSchedule: { open: 6, close: 21 },
-          villageId: village.id,
-        };
-        message_queue["player"] = [];
-        action_feedback["player"] = [];
-        acquaintances["player"] = [];
-        continue;
-      }
-
       agent_locations[agent.id] = agent.homeLocation;
       body[agent.id] = initialBody(rng);
 
@@ -784,12 +752,10 @@ function buildGeneratedWorldState(config: WorldConfig, rng: () => number): World
     production_log: [],
     loans: [],
     caughtStealing: {},
-    pending_meeting: undefined,
+    pending_meetings: {},
     active_laws: [],
     banned: {},
     tax_rate: 0.10,
-    player_created: false,
-    pending_player_actions: [],
   };
 }
 
@@ -805,8 +771,6 @@ function writeAgentFiles(config: WorldConfig): void {
 
   for (const village of config.villages) {
     for (const agent of village.agents) {
-      if (agent.id === "player") continue;
-
       // Always write profile stub (skip if already exists — profiles accumulate story)
       const profPath = join(profDir, `${agent.id}.md`);
       if (!existsSync(profPath)) {
@@ -883,10 +847,10 @@ async function main(): Promise<void> {
     }
   }
 
-  const totalAgents = worldConfig.villages.reduce((n, v) => n + v.agents.filter(a => a.id !== "player").length, 0);
+  const totalAgents = worldConfig.villages.reduce((n, v) => n + v.agents.length, 0);
   console.log(`World generated: ${numVillages} village(s), ${totalAgents} agents, seed=${seed}`);
   for (const v of worldConfig.villages) {
-    const agentCount = v.agents.filter(a => a.id !== "player").length;
+    const agentCount = v.agents.length;
     console.log(`  ${v.name}: ${agentCount} agents`);
   }
   console.log(`  Written to data/world_config.json and data/world_state.json`);

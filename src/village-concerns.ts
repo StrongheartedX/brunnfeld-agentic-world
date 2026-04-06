@@ -1,6 +1,12 @@
 import type { AgentName, WorldState } from "./types.js";
-import { getAgentNames, getDisplayName } from "./world-registry.js";
+import { getAgentNames, getDisplayName, getVillages, getVillageElder } from "./world-registry.js";
 import { isAgentDead } from "./body.js";
+
+const _elderSet: Set<string> | null = null;
+function getElderSet(): Set<string> {
+  if (_elderSet) return _elderSet;
+  return new Set(getVillages().map(v => getVillageElder(v.id)).filter(Boolean) as string[]);
+}
 
 const FOOD_ITEMS = new Set(["bread", "meal", "meat", "vegetables", "eggs", "milk"]);
 
@@ -41,16 +47,17 @@ export function computeVillageConcerns(state: WorldState, currentTick: number): 
   }
 
   // ── Poverty ──────────────────────────────────────────────
-  const poor = alive.filter(a => a !== "otto" && state.economics[a].wallet < 3);
+  const elders = getElderSet();
+  const poor = alive.filter(a => !elders.has(a) && state.economics[a].wallet < 3);
   if (poor.length >= 3) {
     concerns.push(`[Village concern] ${poor.length} villagers have fewer than 3 coin and cannot afford basic necessities.`);
   }
 
   // ── Wealth concentration ─────────────────────────────────
-  const nonOtto = alive.filter(a => a !== "otto");
-  const totalWealth = nonOtto.reduce((s, a) => s + state.economics[a].wallet, 0);
-  if (totalWealth > 30 && nonOtto.length > 0) {
-    const richest = [...nonOtto].sort((a, b) => state.economics[b].wallet - state.economics[a].wallet)[0]!;
+  const nonElder = alive.filter(a => !elders.has(a));
+  const totalWealth = nonElder.reduce((s, a) => s + state.economics[a].wallet, 0);
+  if (totalWealth > 30 && nonElder.length > 0) {
+    const richest = [...nonElder].sort((a, b) => state.economics[b].wallet - state.economics[a].wallet)[0]!;
     const richestWallet = state.economics[richest].wallet;
     const pct = Math.round((richestWallet / totalWealth) * 100);
     if (pct >= 30) {

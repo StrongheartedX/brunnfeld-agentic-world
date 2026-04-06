@@ -110,7 +110,6 @@ function initWorldState(): WorldState {
       liesel: [], sybille: [], friedrich: [],
       otto: [], pater_markus: [],
       dieter: [], magda: [], heinrich: [], elke: [], rupert: [],
-      player: [],
     },
 
     objects: [],
@@ -120,7 +119,6 @@ function initWorldState(): WorldState {
       liesel: [], sybille: [], friedrich: [],
       otto: [], pater_markus: [],
       dieter: [], magda: [], heinrich: [], elke: [], rupert: [],
-      player: [],
     },
 
     acquaintances: {
@@ -143,7 +141,6 @@ function initWorldState(): WorldState {
       heinrich: ["hans"],    // housemates
       elke: [],
       rupert: ["dieter", "friedrich"],
-      player: [],
     },
 
     economy_snapshots: [],
@@ -152,12 +149,10 @@ function initWorldState(): WorldState {
     loans: [],
     caughtStealing: {},
     // Governance
-    pending_meeting: undefined,
+    pending_meetings: {},
     active_laws: [],
     banned: {},
     tax_rate: 0.10,
-    player_created: false,
-    pending_player_actions: [],
   };
 }
 

@@ -10,7 +10,7 @@ import { buildActionSchema, resolveAction, type ResolveContext } from "./tools.j
 import { tickToTime } from "./time.js";
 import { RECIPES, MULTI_FARM_ITEMS } from "./production.js";
 import { computeVillageConcerns } from "./village-concerns.js";
-import { getAgentNames, getDisplayName, getCouncilMembers, getAgentVillage, getVillageLocations, getLocationType, getVillages, getRoads, isRoadLocation, getVillageForLocation } from "./world-registry.js";
+import { getAgentNames, getDisplayName, getCouncilMembers, getAgentVillage, getVillageLocations, getLocationType, getVillages, getVillageElder, getVillageTownHall, getRoads, isRoadLocation, getVillageForLocation } from "./world-registry.js";
 
 // ─── Hunger food hint ─────────────────────────────────────────
 
@@ -27,42 +27,7 @@ function getHungryNoFoodHint(agent: AgentName, state: WorldState): string {
   );
   if (hasFood) return "";
 
-  // Check for raw grain that can't be eaten directly
-  const rawGrainHints: string[] = [];
-  const wheatQty = eco.inventory.items.find(i => i.type === "wheat")?.quantity ?? 0;
-  const flourQty = eco.inventory.items.find(i => i.type === "flour")?.quantity ?? 0;
-  if (wheatQty > 0) rawGrainHints.push("wheat (needs milling → baking before it's edible)");
-  if (flourQty > 0) rawGrainHints.push("flour (needs baking before it's edible)");
-  const rawGrainNote = rawGrainHints.length > 0
-    ? `You have ${rawGrainHints.join(" and ")} — not edible raw. Buy bread instead.\n `
-    : "";
-
-  const agentMkt = getAgentMarketplace(agent, state);
-  const foodOrders = agentMkt.orders
-    .filter(o => o.type === "sell" && EDIBLE_ITEMS.has(o.item) && o.quantity > 0)
-    .sort((a, b) => a.price - b.price);
-
-  if (foodOrders.length > 0) {
-    const cheapest = foodOrders[0]!;
-    const seller = getDisplayName(cheapest.agentId);
-    const canAfford = eco.wallet >= cheapest.price;
-    const affordNote = canAfford
-      ? ""
-      : ` (you have ${eco.wallet}c — short by ${cheapest.price - eco.wallet}c)`;
-    return `(${rawGrainNote}No food in inventory — you need to eat soon.\n Buy ${cheapest.item} at Village Square: ${cheapest.price}c from ${seller}. Use: buy_item.${affordNote})`;
-  }
-
-  // No market food — look up any agents who produce food items by skill
-  const foodProducerSkills = new Set(["cattle", "farmer", "baker", "tavern"]);
-  const specialistLines = getAgentNames()
-    .filter(a => a !== agent && foodProducerSkills.has(state.economics[a]?.skill ?? ""))
-    .slice(0, 3)
-    .map(a => {
-      const currentLoc = state.agent_locations[a];
-      return ` • ${getDisplayName(a)} (${state.economics[a]?.skill}) — currently at ${currentLoc}`;
-    });
-
-  return `(${rawGrainNote}No food in inventory and nothing at the marketplace.${specialistLines.length > 0 ? ` Known food producers:\n${specialistLines.join("\n")}\n Go there or use send_message to request they post a sell order.` : " Nobody seems to have food. Consider sending a message to ask around."})`;
+  return "(You have no food in your inventory.)";
 }
 
 // ─── Location keeper note ─────────────────────────────────────
@@ -85,36 +50,6 @@ function getLocationKeeperNote(agent: AgentName, state: WorldState): string {
     return ""; // Keeper is present — already listed in "Others here"
   }
   return "";
-}
-
-// ─── Surplus food hint ────────────────────────────────────────
-
-function getSurplusFoodHint(agent: AgentName, state: WorldState): string {
-  const eco = state.economics[agent];
-  const surplusItems: string[] = [];
-
-  for (const inv of eco.inventory.items) {
-    if (!EDIBLE_ITEMS.has(inv.type)) continue;
-    const available = inv.quantity - (inv.reserved ?? 0);
-    if (available <= 2) continue;
-    const hasOrder = getAgentMarketplace(agent, state).orders.some(
-      o => o.agentId === agent && o.type === "sell" && o.item === inv.type
-    );
-    if (!hasOrder) surplusItems.push(`${available} ${inv.type}`);
-  }
-
-  if (surplusItems.length === 0) return "";
-
-  const hungryNames = getAgentNames()
-    .filter(a => a !== agent && state.body[a].hunger >= 3 && (state.body[a].starvation_ticks ?? 0) < 999)
-    .slice(0, 2)
-    .map(a => getDisplayName(a));
-
-  const hungryNote = hungryNames.length > 0
-    ? ` ${hungryNames.join(" and ")} ${hungryNames.length === 1 ? "appears" : "appear"} to be hungry.`
-    : "";
-
-  return `(Surplus: ${surplusItems.join(", ")} with no sell order. Post a sell order at Village Square to earn coin.${hungryNote})`;
 }
 
 // ─── Loan perception ──────────────────────────────────────────
@@ -158,12 +93,14 @@ function getVillageLaws(state: WorldState, time: SimTime): string {
   return `\nVillage Laws:\n${lines.join("\n")}`;
 }
 
-function getMeetingContext(state: WorldState, time: SimTime): string {
-  const mtg = state.pending_meeting;
+function getMeetingContext(agent: AgentName, state: WorldState, time: SimTime): string {
+  const vid = getAgentVillage(agent);
+  const mtg = state.pending_meetings[vid];
   if (!mtg) return "";
   if (time.tick < mtg.scheduledTick) {
+    const townHall = getVillageTownHall(vid);
     const meetingTime = tickToTime(mtg.scheduledTick);
-    return `\n(Village meeting: "${mtg.description}" at the Town Hall on ${meetingTime.timeLabel}. Be there.)`;
+    return `\n(Village meeting: "${mtg.description}" at ${townHall} on ${meetingTime.timeLabel}. Be there.)`;
   }
   return "";
 }
@@ -326,7 +263,6 @@ export function buildPerception(
 
   const bodyNote = bodyPerception(body);
   const hungryHint = getHungryNoFoodHint(agent, state);
-  const surplusHint = getSurplusFoodHint(agent, state);
   const keeperNote = getLocationKeeperNote(agent, state);
   const loanPerception = getLoanPerception(agent, state);
   const inventoryLines = buildInventoryLines(agent, state);
@@ -350,7 +286,7 @@ export function buildPerception(
     : "";
 
   const hiredNote = eco.hiredBy
-    ? `\nYou are hired by ${getDisplayName(eco.hiredBy)} today. Produce goods for them.`
+    ? `\nYou are hired by ${getDisplayName(eco.hiredBy)} today.`
     : "";
 
   const laborerNote = (() => {
@@ -368,9 +304,9 @@ export function buildPerception(
     ? `\nVillage events: ${state.active_events.map(e => e.description).join("; ")}`
     : "";
   const lawsBlock = getVillageLaws(state, time);
-  const meetingCtx = getMeetingContext(state, time);
+  const meetingCtx = getMeetingContext(agent, state, time);
 
-  const villageConcernsBlock = agent === "otto"
+  const villageConcernsBlock = agent === getVillageElder(getAgentVillage(agent))
     ? (() => {
         const concerns = computeVillageConcerns(state, time.tick);
         return concerns.length > 0 ? "\n" + concerns.join("\n") : "";
@@ -386,7 +322,7 @@ Weather: ${state.weather}${activeEvents}${lawsBlock}${meetingCtx}${villageConcer
 ${othersStr}${soundsStr ? "\n" + soundsStr : ""}${keeperNote ? "\n" + keeperNote : ""}
 ${bodyNote ? bodyNote + "\n" : ""}${hungryHint ? hungryHint + "\n" : ""}
 Inventory: ${inventoryLines}
-${surplusHint ? surplusHint + "\n" : ""}Wallet: ${eco.wallet} coin${loanPerception}
+Wallet: ${eco.wallet} coin${loanPerception}
 Tools: ${toolLine}${hiredNote}${laborerNote}${producibleBlock}${activeOrdersBlock}
 
 Marketplace board:
@@ -404,7 +340,8 @@ export function buildMeetingPerception(
   meetingPhase: "discussion" | "vote",
   proposal?: string,
 ): string {
-  const mtg = state.pending_meeting!;
+  const vid = getAgentVillage(agent);
+  const mtg = state.pending_meetings[vid]!;
   const eco = state.economics[agent];
   const body = state.body[agent];
   const feedback = (state.action_feedback[agent] ?? []).join("\n");
@@ -414,7 +351,7 @@ export function buildMeetingPerception(
     ? `Present: ${othersPresent.join(", ")}.`
     : "You are alone here.";
 
-  const councilNote = getCouncilMembers("brunnfeld").includes(agent)
+  const councilNote = getCouncilMembers(vid).includes(agent)
     ? `\nYou hold a council seat. This meeting is part of your duties as a council member.`
     : "";
 
@@ -476,7 +413,8 @@ export async function runAgentTurn(
 ): Promise<AgentTurnResult> {
   const model = process.env.CHARACTER_MODEL || "haiku";
   const hasConcerns = computeVillageConcerns(context.state, context.time.tick).length > 0;
-  const atMeeting = context.agentLocation === "Town Hall" && !!context.state.pending_meeting;
+  const agentVid = getAgentVillage(agent);
+  const atMeeting = context.agentLocation === getVillageTownHall(agentVid) && !!context.state.pending_meetings[agentVid];
   const prompt = buildPrompt(agent, perception, buildActionSchema(agent, hasConcerns, atMeeting), context.state);
   const name = getDisplayName(agent);
 

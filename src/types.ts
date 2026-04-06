@@ -22,7 +22,6 @@ export const AGENT_DISPLAY_NAMES: Record<AgentName, string> = {
   otto: "Otto", pater_markus: "Pater Markus",
   dieter: "Dieter", magda: "Magda", heinrich: "Heinrich",
   elke: "Elke", rupert: "Rupert",
-  player: "You",
 };
 
 export const AGENT_HOMES: Record<AgentName, string> = {
@@ -32,7 +31,6 @@ export const AGENT_HOMES: Record<AgentName, string> = {
   liesel: "Tavern", sybille: "Healer's Hut", friedrich: "Cottage 7",
   otto: "Elder's House", pater_markus: "Town Hall",
   dieter: "Cottage 8", magda: "Cottage 8", heinrich: "Cottage 1", elke: "Seamstress Cottage", rupert: "Cottage 3",
-  player: "Village Square",
 };
 
 // ─── Skills ────────────────────────────────────────────────
@@ -50,7 +48,6 @@ export const AGENT_SKILLS: Record<AgentName, Skill> = {
   otto: "none", pater_markus: "none",
   dieter: "miner", magda: "none", heinrich: "farmer",
   elke: "seamstress", rupert: "miner",
-  player: "none",
 };
 
 export const AGENT_WORK_LOCATIONS: Record<AgentName, string> = {
@@ -60,7 +57,6 @@ export const AGENT_WORK_LOCATIONS: Record<AgentName, string> = {
   otto: "Elder's House", pater_markus: "Town Hall",
   dieter: "Mine", magda: "Village Square", heinrich: "Farm 1",
   elke: "Seamstress Cottage", rupert: "Mine",
-  player: "Village Square",
 };
 
 // ─── Seasons ───────────────────────────────────────────────
@@ -229,6 +225,7 @@ export interface StealRecord {
 // ─── Governance ────────────────────────────────────────────
 
 export interface PendingMeeting {
+  villageId: string;
   scheduledTick: number;
   agendaType: "tax_change" | "marketplace_hours" | "banishment" | "general_rule";
   description: string;
@@ -345,15 +342,11 @@ export interface WorldState {
   caughtStealing: Partial<Record<AgentName, StealRecord[]>>;
 
   // Governance
-  pending_meeting?: PendingMeeting;
-  pending_petitions?: { agent: AgentName; topic: string; tick: number }[];
+  pending_meetings: Record<string, PendingMeeting>;
+  pending_petitions?: { agent: AgentName; topic: string; tick: number; villageId: string }[];
   active_laws: Law[];
   banned: Partial<Record<AgentName, number>>;
   tax_rate: number;
-
-  // Player character
-  player_created: boolean;
-  pending_player_actions: AgentAction[];
 
   // Multi-village: per-village marketplaces (absent = single-village mode using `marketplace`)
   marketplaces?: Record<string, Marketplace>;

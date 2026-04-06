@@ -1,5 +1,5 @@
 import type { AgentAction, AgentName, ItemType, Loan, ResolvedAction, WorldState, SimTime, StealRecord } from "./types.js";
-import { getAgentNames, getDisplayName, getAgentVillage, isValidLocation, getLocationHours, isLocationOpenByRegistry, getVillageLocations, getVillages, resolveAgentLocation, isRoadLocation, getRoads, getVillageForLocation } from "./world-registry.js";
+import { getAgentNames, getDisplayName, getAgentVillage, getVillageElder, getVillageTownHall, getVillageAgents, isValidLocation, getLocationHours, isLocationOpenByRegistry, getVillageLocations, getVillages, resolveAgentLocation, isRoadLocation, getRoads, getVillageForLocation } from "./world-registry.js";
 import { getAgentMarketplace } from "./marketplace.js";
 import { getHourIndex } from "./time.js";
 import { lockDoor, unlockDoor, resolveKnock } from "./doors.js";
@@ -11,8 +11,6 @@ import { emitSSE } from "./events.js";
 import { isLocationBlockedByEvent } from "./god-mode.js";
 
 const CORE_ACTION_SCHEMA = `IMPORTANT: Your wallet and inventory shown above are exact. Do not claim to have coin or goods you have not received. Verbal agreements do not transfer goods — only post_order and buy_item create actual trades.
-
-Your livelihood depends on producing goods and trading them. Producing and trading is your primary activity each turn.
 
 Respond ONLY with a JSON object:
 {
@@ -46,9 +44,9 @@ export function buildActionSchema(
   if (atMeeting) {
     schema += `\n- propose_rule: Propose a rule for the vote. Fields: text (the rule), value? (number, e.g. 0.15 for tax rate).`;
     schema += `\n- vote: Cast your vote. Fields: side ("agree"|"disagree").`;
-  } else if (agent === "otto" && hasConcerns) {
+  } else if (agent === getVillageElder(getAgentVillage(agent)) && hasConcerns) {
     schema += `\n- call_meeting: Call a village meeting for next dawn. Fields: agenda_type ("tax_change"|"marketplace_hours"|"banishment"|"general_rule"), text (the agenda), target? (first name, banishment only).`;
-  } else if (agent !== "otto" && hasConcerns) {
+  } else if (agent !== getVillageElder(getAgentVillage(agent)) && hasConcerns) {
     schema += `\n- petition_meeting: Ask Otto to call a village meeting. Fields: text (what it should address).`;
   }
   return schema;
@@ -459,11 +457,11 @@ export function resolveAction(
     }
 
     case "call_meeting": {
-      if (agent !== "otto") {
-        return { ...action, result: `[Can't do that] Only Otto can call a village meeting.`, visible: false };
+      if (agent !== getVillageElder(getAgentVillage(agent))) {
+        return { ...action, result: `[Can't do that] Only the village elder can call a village meeting.`, visible: false };
       }
-      if (state.pending_meeting) {
-        return { ...action, result: `[Can't do that] A meeting is already scheduled for tick ${state.pending_meeting.scheduledTick}.`, visible: false };
+      if (state.pending_meetings[getAgentVillage(agent)]) {
+        return { ...action, result: `[Can't do that] A meeting is already scheduled for tick ${state.pending_meetings[getAgentVillage(agent)]!.scheduledTick}.`, visible: false };
       }
       const agendaType = action.agenda_type;
       if (!agendaType) {
@@ -474,23 +472,26 @@ export function resolveAction(
         ? time.tick + 16
         : time.tick + (16 - ticksIntoCurrent);
       const agendaDesc = action.text ?? action.description ?? agendaType.replace("_", " ");
-      state.pending_meeting = {
+      const villageId = getAgentVillage(agent);
+      state.pending_meetings[villageId] = {
+        villageId,
         scheduledTick: nextDawnTick,
         agendaType,
         description: agendaDesc,
         target: action.target as AgentName | undefined,
         calledAtTick: time.tick,
       };
-      const noticeText = `Otto has called a village meeting: "${agendaDesc}". It will be held at the Town Hall at dawn on day ${Math.ceil(nextDawnTick / 16)}. Attend if you wish to participate.`;
-      for (const a of getAgentNames()) {
+      const townHall = getVillageTownHall(villageId);
+      const noticeText = `${getDisplayName(agent)} has called a village meeting: "${agendaDesc}". It will be held at ${townHall} at dawn on day ${Math.ceil(nextDawnTick / 16)}. Attend if you wish to participate.`;
+      for (const a of getVillageAgents(villageId)) {
         feedbackToAgent(a, state, noticeText);
       }
-      return { ...action, result: `Otto calls a village meeting on "${agendaDesc}" — scheduled for dawn of day ${Math.ceil(nextDawnTick / 16)} at the Town Hall.`, visible: true };
+      return { ...action, result: `${getDisplayName(agent)} calls a village meeting on "${agendaDesc}" — scheduled for dawn of day ${Math.ceil(nextDawnTick / 16)} at ${townHall}.`, visible: true };
     }
 
     case "petition_meeting": {
-      if (agent === "otto") {
-        return { ...action, result: `[Can't do that] Otto calls meetings directly with call_meeting.`, visible: false };
+      if (agent === getVillageElder(getAgentVillage(agent))) {
+        return { ...action, result: `[Can't do that] The village elder calls meetings directly with call_meeting.`, visible: false };
       }
       const topic = action.text;
       if (!topic) {
@@ -499,15 +500,15 @@ export function resolveAction(
       state.pending_petitions ??= [];
       // Replace any existing petition from this agent (one petition per agent at a time)
       state.pending_petitions = state.pending_petitions.filter(p => p.agent !== agent);
-      state.pending_petitions.push({ agent, topic, tick: time.tick });
+      state.pending_petitions.push({ agent, topic, tick: time.tick, villageId: getAgentVillage(agent) });
       return { ...action, result: `${name} petitions Otto to call a village meeting: "${topic.substring(0, 80)}"`, visible: true };
     }
 
     case "propose_rule": {
-      if (agentLocation !== "Town Hall") {
+      if (agentLocation !== getVillageTownHall(getAgentVillage(agent))) {
         return { ...action, result: `[Can't do that] propose_rule is only valid at the Town Hall during a meeting.`, visible: false };
       }
-      if (!state.pending_meeting) {
+      if (!state.pending_meetings[getAgentVillage(agent)]) {
         return { ...action, result: `[Can't do that] No meeting is in progress.`, visible: false };
       }
       if (!action.text) {
@@ -517,10 +518,10 @@ export function resolveAction(
     }
 
     case "vote": {
-      if (agentLocation !== "Town Hall") {
+      if (agentLocation !== getVillageTownHall(getAgentVillage(agent))) {
         return { ...action, result: `[Can't do that] vote is only valid at the Town Hall during a meeting.`, visible: false };
       }
-      if (!state.pending_meeting) {
+      if (!state.pending_meetings[getAgentVillage(agent)]) {
         return { ...action, result: `[Can't do that] No vote is in progress.`, visible: false };
       }
       if (action.side !== "agree" && action.side !== "disagree") {

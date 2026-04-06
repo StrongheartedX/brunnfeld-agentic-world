@@ -19,8 +19,6 @@ export function readWorldState(): WorldState {
   const state = JSON.parse(readFileSync(join(DATA_DIR, "world_state.json"), "utf-8")) as WorldState;
   state.loans ??= [];
   state.caughtStealing ??= {};
-  state.player_created ??= false;
-  state.pending_player_actions ??= [];
   state.active_laws ??= [];
   state.banned ??= {};
   state.tax_rate ??= 0.10;
@@ -30,49 +28,26 @@ export function readWorldState(): WorldState {
 
 export function writeWorldState(state: WorldState): void {
   const path = join(DATA_DIR, "world_state.json");
-  // Guard against clobbering player state created or queued mid-tick.
-  // The engine holds an in-memory snapshot from tick-start; if the server wrote
-  // player_created=true or new pending actions while the tick was running,
-  // we must not overwrite them.
+  // Guard against clobbering meeting state injected mid-tick via God Mode.
   try {
     const onDisk = JSON.parse(readFileSync(path, "utf-8")) as Partial<WorldState>;
-    const p = "player" as const;
     // God Mode may have injected a more urgent meeting while the tick was running.
-    // Use whichever meeting fires sooner (lower scheduledTick wins) — but only if
-    // the disk meeting is actually in the future (not a stale expired meeting).
-    const diskMtg = onDisk.pending_meeting;
-    const memMtg  = state.pending_meeting;
+    // Per-village: merge each village's meeting — use whichever fires sooner.
+    const diskMeetings = (onDisk as Record<string, unknown>).pending_meetings as Record<string, import("./types.js").PendingMeeting> | undefined
+      ?? (onDisk as Record<string, unknown>).pending_meeting  // backwards compat with old single-meeting state
+        ? { brunnfeld: (onDisk as Record<string, unknown>).pending_meeting as import("./types.js").PendingMeeting }
+        : {};
     const currentTick = state.current_tick ?? 0;
-    if (diskMtg && diskMtg.scheduledTick > currentTick && (!memMtg || diskMtg.scheduledTick < memMtg.scheduledTick)) {
-      console.log(`  🏛 [Merge] Picking up disk meeting "${diskMtg.description}" (scheduledTick=${diskMtg.scheduledTick}) over mem meeting "${memMtg?.description ?? "none"}" (scheduledTick=${memMtg?.scheduledTick ?? "none"})`);
-      state.pending_meeting = diskMtg;
-      // Restore agent locations — God Mode teleported everyone to Town Hall
-      for (const key of Object.keys(onDisk.agent_locations ?? {})) {
-        state.agent_locations[key as AgentName] = onDisk.agent_locations![key as AgentName]!;
-      }
-    }
-
-    if (onDisk.player_created && !state.player_created) {
-      // Player was created mid-tick — bring their full setup forward
-      state.player_created = true;
-      state.pending_player_actions = onDisk.pending_player_actions ?? [];
-      if (onDisk.agent_locations?.[p]) state.agent_locations[p] = onDisk.agent_locations[p]!;
-      if (onDisk.body?.[p])           state.body[p]           = onDisk.body[p]!;
-      if (onDisk.economics?.[p])      state.economics[p]      = onDisk.economics[p]!;
-      if (onDisk.acquaintances?.[p])  state.acquaintances[p]  = onDisk.acquaintances[p]!;
-      if (onDisk.message_queue?.[p])  state.message_queue[p]  = onDisk.message_queue[p]!;
-      if (onDisk.action_feedback?.[p]) state.action_feedback[p] = onDisk.action_feedback[p]!;
-    } else if (state.player_created) {
-      // Player already existed at tick start; merge any new actions queued
-      // by the server while the tick was running (those beyond what engine saw).
-      const diskPending = onDisk.pending_player_actions ?? [];
-      const enginePending = state.pending_player_actions ?? [];
-      // Items the server appended beyond the engine's starting snapshot
-      if (diskPending.length > enginePending.length) {
-        state.pending_player_actions = [
-          ...enginePending,
-          ...diskPending.slice(enginePending.length),
-        ];
+    for (const [vid, diskMtg] of Object.entries(diskMeetings ?? {})) {
+      if (!diskMtg || diskMtg.scheduledTick <= currentTick) continue;
+      const memMtg = state.pending_meetings[vid];
+      if (!memMtg || diskMtg.scheduledTick < memMtg.scheduledTick) {
+        console.log(`  🏛 [Merge] Picking up disk meeting [${vid}] "${diskMtg.description}" (scheduledTick=${diskMtg.scheduledTick}) over mem "${memMtg?.description ?? "none"}"`);
+        state.pending_meetings[vid] = diskMtg;
+        // Restore agent locations — God Mode teleported everyone to Town Hall
+        for (const key of Object.keys(onDisk.agent_locations ?? {})) {
+          state.agent_locations[key as AgentName] = onDisk.agent_locations![key as AgentName]!;
+        }
       }
     }
   } catch { /* first write or parse error — proceed as-is */ }

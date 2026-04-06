@@ -1,7 +1,7 @@
 import type {
   AgentName, AgentTurnResult, Law, ResolvedAction, SimTime, TickLog, WorldState,
 } from "./types.js";
-import { getAgentNames, getDisplayName, getCouncilMembers, getDescription, getVillages, getAgentVillage } from "./world-registry.js";
+import { getAgentNames, getDisplayName, getCouncilMembers, getDescription, getVillages, getAgentVillage, getVillageAgents, getVillageElder, getVillageTownHall, isRoadLocation } from "./world-registry.js";
 import { emitSSE } from "./events.js";
 import { tickToTime, ticksPerDay, getHourIndex } from "./time.js";
 import {
@@ -23,7 +23,6 @@ import { resolveBarter } from "./trade-scanner.js";
 import { takeEconomySnapshot, getEconomySummary } from "./economy-tracker.js";
 import { applyWinterHeating, getSeasonDescription } from "./seasons.js";
 import { isLocationOpen } from "./village-map.js";
-import { processPlayerTurn, updatePlayerBody, checkPlayerRevive } from "./player.js";
 
 // ─── Agent descriptions for unknown acquaintances ────────────
 
@@ -169,31 +168,60 @@ function applyLawEffect(law: Law, state: WorldState, time: SimTime): void {
   }
 }
 
+// ─── Village Bell — summon agents to Town Hall ───────────
+
+function ringVillageBell(state: WorldState, time: SimTime, villageId: string): void {
+  const townHall = getVillageTownHall(villageId);
+  const villageAgents = getVillageAgents(villageId);
+
+  for (const agent of villageAgents) {
+    if (isAgentDead(state.body[agent])) continue;
+    if (state.banned?.[agent] != null && time.tick < state.banned[agent]!) continue;
+    if (isRoadLocation(state.agent_locations[agent])) {
+      feedbackToAgent(agent, state,
+        `You hear the faint toll of a village bell in the distance. A meeting is underway, but you are too far away to attend.`);
+      continue;
+    }
+    if (state.agent_locations[agent] === townHall) {
+      feedbackToAgent(agent, state,
+        `The village bell rings — the assembly begins.`);
+      continue;
+    }
+    state.agent_locations[agent] = townHall;
+    feedbackToAgent(agent, state,
+      `The village bell rings across the rooftops — the assembly is called to order. You make your way to ${townHall}.`);
+  }
+
+  emitSSE("meeting:bell", { villageId, townHall });
+  console.log(`  🔔 [${villageId}] Village bell rang — agents summoned to ${townHall}`);
+}
+
 // ─── Village Meeting Phase ────────────────────────────────
 
-async function runMeetingPhase(state: WorldState, time: SimTime): Promise<{ attendees: Set<AgentName>; log: import("./types.js").MeetingLog | null }> {
-  const mtg = state.pending_meeting!;
-  const activeAgents = getAgentNames().filter(a => !isAgentDead(state.body[a]));
+async function runMeetingPhase(state: WorldState, time: SimTime, villageId: string): Promise<{ attendees: Set<AgentName>; log: import("./types.js").MeetingLog | null }> {
+  const mtg = state.pending_meetings[villageId]!;
+  const townHall = getVillageTownHall(villageId);
+  const villageAgents = getVillageAgents(villageId).filter(a => !isAgentDead(state.body[a]));
 
   // 1. Attendance check
-  const attendees = activeAgents.filter(a => state.agent_locations[a] === "Town Hall");
-  const atHall = getAgentNames().map(a => `${a}=${state.agent_locations[a]}`).join(", ");
-  console.log(`  🏛 [Quorum] Agents at Town Hall: ${attendees.length}/${activeAgents.length} — ${attendees.join(", ") || "none"}`);
-  console.log(`  🏛 [Quorum] All locations: ${atHall}`);
-  const councilPresent = attendees.filter(a => getCouncilMembers("brunnfeld").includes(a));
+  const attendees = villageAgents.filter(a => state.agent_locations[a] === townHall);
+  const atHall = villageAgents.map(a => `${a}=${state.agent_locations[a]}`).join(", ");
+  console.log(`  🏛 [Quorum] [${villageId}] Agents at ${townHall}: ${attendees.length}/${villageAgents.length} — ${attendees.join(", ") || "none"}`);
+  console.log(`  🏛 [Quorum] [${villageId}] All locations: ${atHall}`);
+  const councilPresent = attendees.filter(a => getCouncilMembers(villageId).includes(a));
   if (councilPresent.length < 3) {
     const msg = `The village council meeting on "${mtg.description}" failed to convene — only ${councilPresent.length} council member(s) attended (need 3 of 5).`;
-    for (const a of getAgentNames()) feedbackToAgent(a, state, msg);
-    emitSSE("meeting:quorum_fail", { description: mtg.description, attendeeCount: attendees.length });
-    state.pending_meeting = undefined;
+    for (const a of getVillageAgents(villageId)) feedbackToAgent(a, state, msg);
+    emitSSE("meeting:quorum_fail", { description: mtg.description, attendeeCount: attendees.length, villageId });
+    delete state.pending_meetings[villageId];
     return { attendees: new Set<AgentName>(), log: null };
   }
 
-  console.log(`\n  🏛 Village meeting: "${mtg.description}" — ${attendees.length} attendees`);
-  emitSSE("meeting:start", { agendaType: mtg.agendaType, description: mtg.description, attendees, attendeeCount: attendees.length });
+  console.log(`\n  🏛 Village meeting [${villageId}]: "${mtg.description}" — ${attendees.length} attendees`);
+  emitSSE("meeting:start", { agendaType: mtg.agendaType, description: mtg.description, attendees, attendeeCount: attendees.length, villageId });
 
   // 2. Discussion phase — 3 rounds, council members first (up to 5 participants)
-  const nonCouncilAttendees = attendees.filter(a => !getCouncilMembers("brunnfeld").includes(a));
+  const nonCouncilAttendees = attendees.filter(a => !getCouncilMembers(villageId).includes(a));
   const participants = [
     ...councilPresent,
     ...nonCouncilAttendees,
@@ -223,7 +251,7 @@ async function runMeetingPhase(state: WorldState, time: SimTime): Promise<{ atte
         }
         if (action.visible && action.result) {
           conversationSoFar += `${action.result}\n`;
-          emitSSE("agent:action", { agent: r.agent, actionType: action.type, text: action.text, result: action.result, location: "Town Hall" });
+          emitSSE("agent:action", { agent: r.agent, actionType: action.type, text: action.text, result: action.result, location: townHall });
         }
       }
     }
@@ -250,7 +278,7 @@ async function runMeetingPhase(state: WorldState, time: SimTime): Promise<{ atte
   for (const r of voteResults) {
     for (const action of r.actions) {
       if (action.visible && action.result) {
-        emitSSE("agent:action", { agent: r.agent, actionType: action.type, text: action.text, result: action.result, location: "Town Hall" });
+        emitSSE("agent:action", { agent: r.agent, actionType: action.type, text: action.text, result: action.result, location: townHall });
       }
       if (action.type === "vote") {
         const side = action.side === "agree" ? "agree" : "disagree";
@@ -279,18 +307,18 @@ async function runMeetingPhase(state: WorldState, time: SimTime): Promise<{ atte
     applyLawEffect(law, state, time);
     lawText = proposalText;
     const passMsg = `Village meeting result: "${proposalText}" PASSED (${agreeCount}/${PASS_THRESHOLD} agreed). New law recorded.`;
-    for (const a of getAgentNames()) feedbackToAgent(a, state, passMsg);
+    for (const a of getVillageAgents(villageId)) feedbackToAgent(a, state, passMsg);
     emitSSE("meeting:result", { passed: true, agreeCount, law });
     console.log(`  ✅ Law passed: "${proposalText}" (${agreeCount} agreed)`);
   } else {
     const failMsg = `Village meeting result: "${proposalText}" FAILED (${agreeCount} agreed, needed ${PASS_THRESHOLD} of ${attendees.length}).`;
-    for (const a of getAgentNames()) feedbackToAgent(a, state, failMsg);
+    for (const a of getVillageAgents(villageId)) feedbackToAgent(a, state, failMsg);
     emitSSE("meeting:result", { passed: false, agreeCount });
     console.log(`  ❌ Vote failed: "${proposalText}" (${agreeCount}/${PASS_THRESHOLD})`);
   }
 
-  state.pending_meeting = undefined;
-  emitSSE("meeting:end", {});
+  delete state.pending_meetings[villageId];
+  emitSSE("meeting:end", { villageId });
 
   const meetingLog: import("./types.js").MeetingLog = {
     description: mtg.description,
@@ -383,13 +411,11 @@ export async function runTick(tick: number): Promise<void> {
   for (const agent of getAgentNames()) {
     updateBodyState(state.body[agent], time);
   }
-  updatePlayerBody(state, time);
 
   // ── 4. CLEAR LAST TICK'S FEEDBACK ───────────────────────────
   // (keep it around for one tick so agents read it, then clear before next LLM call)
   const feedbackSnapshot = { ...state.action_feedback };
   for (const agent of getAgentNames()) state.action_feedback[agent] = [];
-  if (state.player_created) state.action_feedback["player"] = [];
 
   // ── 4b. GOD MODE EVENTS ──────────────────────────────────────
   tickGodModeEvents(state, time); // expire events, apply bandit theft
@@ -397,12 +423,6 @@ export async function runTick(tick: number): Promise<void> {
   // Expire petitions older than 1 in-game day (16 ticks)
   if (state.pending_petitions && state.pending_petitions.length > 0) {
     state.pending_petitions = state.pending_petitions.filter(p => time.tick - p.tick <= 16);
-  }
-
-  // ── 4c. PLAYER TURN ──────────────────────────────────────────
-  let playerTurnResult: import("./types.js").AgentTurnResult | null = null;
-  if (state.player_created && state.pending_player_actions.length > 0) {
-    playerTurnResult = processPlayerTurn(state, time);
   }
 
   // ── 4d. BANNED AGENT ENFORCEMENT ────────────────────────
@@ -421,70 +441,61 @@ export async function runTick(tick: number): Promise<void> {
     }
   }
 
-  // ── 4e. AUTO-SCHEDULE DAILY MEETING ─────────────────────
-  if (time.isFirstTickOfDay && !state.pending_meeting) {
-    const nextDawnTick = time.tick + 16;
-    state.pending_meeting = {
-      scheduledTick: nextDawnTick,
+  // ── 4e. AUTO-SCHEDULE DAILY MEETING (per village) ───────
+  // Auto-schedule assembly every 5 ticks (per village)
+  for (const village of getVillages()) {
+    if (state.pending_meetings[village.id]) continue;
+    const elder = getVillageElder(village.id);
+    if (!elder) continue;
+    const elderName = getDisplayName(elder);
+    const townHall = getVillageTownHall(village.id);
+    const nextMeetingTick = time.tick + 5;
+    state.pending_meetings[village.id] = {
+      villageId: village.id,
+      scheduledTick: nextMeetingTick,
       agendaType: "general_rule",
-      description: "Otto holds the daily village assembly",
+      description: `${elderName} holds the village assembly`,
       calledAtTick: time.tick,
     };
-    const noticeText = `Otto has called the daily village meeting. It will be held at the Town Hall tomorrow at dawn. All are welcome to attend and raise matters.`;
-    for (const a of getAgentNames()) feedbackToAgent(a, state, noticeText);
-    console.log(`  🏛 Daily meeting auto-scheduled for tick ${nextDawnTick}`);
+    const noticeText = `${elderName} has called a village assembly. It will be held at ${townHall} in 5 hours.`;
+    for (const a of getVillageAgents(village.id)) feedbackToAgent(a, state, noticeText);
+    console.log(`  🏛 [${village.id}] Assembly auto-scheduled for tick ${nextMeetingTick}`);
   }
 
-  // ── 4f. PRE-MEETING NUDGE ────────────────────────────────────
-  if (state.pending_meeting && time.tick === state.pending_meeting.scheduledTick - 1) {
-    for (const a of getAgentNames()) {
-      feedbackToAgent(a, state, `[URGENT] Village meeting starts next hour at the Town Hall. Move to Town Hall now if you are not already there.`);
-    }
-  }
-
-  // Council summons — evening before (8 ticks / hours before dawn)
-  if (state.pending_meeting && time.tick === state.pending_meeting.scheduledTick - 8) {
-    for (const a of getCouncilMembers("brunnfeld")) {
-      if (!isAgentDead(state.body[a])) {
-        feedbackToAgent(a, state,
-          `[Council duty] Village council meets tomorrow at dawn at the Town Hall. Your attendance is required.`
-        );
+  // ── 4f. PRE-MEETING NUDGE (per village) ─────────────────────
+  for (const [vid, mtg] of Object.entries(state.pending_meetings)) {
+    if (time.tick === mtg.scheduledTick - 1) {
+      const townHall = getVillageTownHall(vid);
+      for (const a of getVillageAgents(vid)) {
+        feedbackToAgent(a, state, `The village assembly begins next hour. The bell will ring at ${townHall}.`);
       }
     }
   }
 
-  // ── 4g. VILLAGE MEETING PHASE ───────────────────────────────
-  // Drop any pending meeting that is already in the past (stale / never fired)
-  if (state.pending_meeting && state.pending_meeting.scheduledTick < time.tick) {
-    console.log(`  🏛 [Meeting] Dropping stale meeting "${state.pending_meeting.description}" (scheduledTick=${state.pending_meeting.scheduledTick} < tick=${time.tick})`);
-    state.pending_meeting = undefined;
+  // ── 4g. VILLAGE MEETING PHASE (per village) ────────────────
+  // Drop stale meetings
+  for (const [vid, mtg] of Object.entries(state.pending_meetings)) {
+    if (mtg.scheduledTick < time.tick) {
+      console.log(`  🏛 [${vid}] Dropping stale meeting "${mtg.description}" (scheduledTick=${mtg.scheduledTick} < tick=${time.tick})`);
+      delete state.pending_meetings[vid];
+    }
   }
 
   let meetingAttendees = new Set<AgentName>();
   let meetingLog: import("./types.js").MeetingLog | null = null;
-  if (state.pending_meeting) {
-    console.log(`  🏛 [Meeting] Pending meeting "${state.pending_meeting.description}" scheduledTick=${state.pending_meeting.scheduledTick}, current tick=${time.tick}`);
-  }
-  if (state.pending_meeting && time.tick === state.pending_meeting.scheduledTick) {
-    console.log(`  🏛 [Meeting] FIRING meeting "${state.pending_meeting.description}" — checking quorum...`);
-    const result = await runMeetingPhase(state, time);
-    meetingAttendees = result.attendees;
-    meetingLog = result.log;
-    console.log(`  🏛 [Meeting] Done — ${meetingAttendees.size} attendees excluded from normal tick`);
-
-    // Schedule next daily meeting (this tick consumed the pending slot)
-    if (!state.pending_meeting) {
-      const nextDawnTick = time.tick + 16;
-      state.pending_meeting = {
-        scheduledTick: nextDawnTick,
-        agendaType: "general_rule",
-        description: "Otto holds the daily village assembly",
-        calledAtTick: time.tick,
-      };
-      const noticeText = `Otto has called the daily village meeting. It will be held at the Town Hall tomorrow at dawn. All are welcome to attend and raise matters.`;
-      for (const a of getAgentNames()) feedbackToAgent(a, state, noticeText);
-      console.log(`  🏛 Daily meeting auto-scheduled for tick ${nextDawnTick}`);
+  for (const [vid, mtg] of Object.entries(state.pending_meetings)) {
+    if (time.tick !== mtg.scheduledTick) {
+      console.log(`  🏛 [${vid}] Pending meeting "${mtg.description}" scheduledTick=${mtg.scheduledTick}, current tick=${time.tick}`);
+      continue;
     }
+    ringVillageBell(state, time, vid);
+    console.log(`  🏛 [${vid}] FIRING meeting "${mtg.description}" — checking quorum...`);
+    const result = await runMeetingPhase(state, time, vid);
+    for (const a of result.attendees) meetingAttendees.add(a);
+    if (result.log) meetingLog = result.log; // last village's log wins for tick log
+    console.log(`  🏛 [${vid}] Done — ${result.attendees.size} attendees excluded from normal tick`);
+
+    // Next assembly auto-scheduled by the top-of-tick loop (no pending → schedules +5)
   }
 
   // ── 5. BUILD PERCEPTIONS ─────────────────────────────────────
@@ -507,7 +518,8 @@ export async function runTick(tick: number): Promise<void> {
       .filter(a => a !== agent && state.agent_locations[a] === location)
       .map(a => describeAgent(a, agent, state));
 
-    const pendingMessages = deliverMessages(state, agent, tick);
+    // In harness mode, messages are delivered in buildSeedContext — don't consume them here
+    const pendingMessages = process.env.USE_HARNESS === "true" ? "" : deliverMessages(state, agent, tick);
     const sounds = getSounds(agent, location, lastTickActions, state.agent_locations);
 
     perceptions[agent] = buildPerception(
@@ -632,9 +644,6 @@ export async function runTick(tick: number): Promise<void> {
     allResults.push(...locResults);
     tickLocations[location] = { agents: group, rounds: locationRounds };
   }
-  // Include player result so production/marketplace resolvers process it
-  if (playerTurnResult) allResults.push(playerTurnResult);
-
   // Persist resolved actions for next tick's harness look_around() sounds
   prevTickActions = Object.fromEntries(allResults.map(r => [r.agent, r.actions]));
 
@@ -681,24 +690,6 @@ export async function runTick(tick: number): Promise<void> {
     const others = byLocationForMemory[result.agent]?.map(a => getDisplayName(a)) ?? [];
     updateAgentMemoryFromActions(result.agent, time, state.agent_locations[result.agent], others, result.actions, result.historyLines);
     updateRelationships(result.agent, result.actions, others);
-  }
-
-  // ── 9b. PLAYER POST-TICK ─────────────────────────────────────
-  checkPlayerRevive(state, tick);
-  if (state.player_created && playerTurnResult) {
-    const playerAction = playerTurnResult.actions[0];
-    const feedback = state.action_feedback["player"] ?? [];
-    // For produce actions, the real result comes from feedbackToAgent after resolution
-    const resultText = (playerAction?.result && playerAction.type !== "produce")
-      ? playerAction.result
-      : feedback.join("; ");
-    emitSSE("player:update", {
-      agent: "player",
-      result: resultText,
-      wallet: state.economics["player"]?.wallet ?? 0,
-      location: state.agent_locations["player"] ?? "",
-      feedback: feedback.length > 0 ? feedback.join("\n") : undefined,
-    });
   }
 
   // ── 10. ECONOMY SNAPSHOT ────────────────────────────────────

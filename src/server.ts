@@ -6,12 +6,8 @@ import { eventBus, emitSSE } from "./events.js";
 import { readWorldState, writeWorldState } from "./memory.js";
 import { triggerEvent, triggerMeeting, runInterview } from "./god-mode.js";
 import { queueMessage } from "./messages.js";
-import type { AgentName, AgentAction } from "./types.js";
-import { initPlayer } from "./player.js";
-import { resolveAction } from "./tools.js";
-import { resolveProduction } from "./production.js";
-import { tickToTime } from "./time.js";
-import { reloadConfig, getVillages } from "./world-registry.js";
+import type { AgentName } from "./types.js";
+import { reloadConfig, getVillages, getVillageElder, getAgentVillage } from "./world-registry.js";
 
 export { emitSSE };
 
@@ -94,9 +90,6 @@ const server = createServer(async (req, res) => {
         "order:posted":     (e) => send({ type: "order", event: "posted",    ...(e as object) }),
         "order:cancelled":  (e) => send({ type: "order", event: "cancelled", ...(e as object) }),
         "order:expired":    (e) => send({ type: "order", event: "expired",   ...(e as object) }),
-        "player:created":   (e) => send({ type: "player:created", ...(e as object) }),
-        "player:update":    (e) => send({ type: "player:update",  ...(e as object) }),
-        "player:revived":   (e) => send({ type: "player:revived", ...(e as object) }),
         "meeting:start":      (e) => send({ type: "meeting:start",      ...(e as object) }),
         "meeting:phase":      (e) => send({ type: "meeting:phase",      ...(e as object) }),
         "meeting:vote":       (e) => send({ type: "meeting:vote",       ...(e as object) }),
@@ -209,93 +202,6 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // ─── Player: create character ──────────────────
-    if (path === "/api/player/create" && req.method === "POST") {
-      const body = await parseBody(req);
-      const name = (body["name"] as string) ?? "Traveller";
-      const skill = (body["skill"] as string) ?? "farmer";
-      const location = (body["location"] as string) ?? "Village Square";
-      const state = readWorldState();
-      if (state.player_created) {
-        headers["Content-Type"] = "application/json";
-        res.writeHead(409, headers);
-        res.end(JSON.stringify({ ok: false, error: "Player already created." }));
-        return;
-      }
-      initPlayer(state, name, skill, location);
-      writeWorldState(state);
-      headers["Content-Type"] = "application/json";
-      res.writeHead(200, headers);
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-
-    // ─── Player: queue action ──────────────────────
-    if (path === "/api/player/action" && req.method === "POST") {
-      const body = await parseBody(req);
-      const action = body["action"] as Record<string, unknown>;
-      if (!action?.type) {
-        headers["Content-Type"] = "application/json";
-        res.writeHead(400, headers);
-        res.end(JSON.stringify({ ok: false, error: "Missing action.type" }));
-        return;
-      }
-      const state = readWorldState();
-      if (!state.player_created) {
-        headers["Content-Type"] = "application/json";
-        res.writeHead(400, headers);
-        res.end(JSON.stringify({ ok: false, error: "Player not created yet." }));
-        return;
-      }
-      // All player actions execute immediately — no tick queue
-      const time = tickToTime(state.current_tick ?? 1);
-      const ctx = {
-        agent: "player" as const,
-        agentLocation: state.agent_locations["player"] ?? "Village Square",
-        state,
-        time,
-        movedThisTick: new Set<"player">(),
-      };
-      if (!state.action_feedback["player"]) state.action_feedback["player"] = [];
-      const prevFeedbackLen = state.action_feedback["player"].length;
-
-      const resolved = resolveAction(action as unknown as AgentAction, ctx);
-      const playerResult = { agent: "player" as const, actions: [resolved], pendingMove: undefined };
-
-      if (action.type === "produce") {
-        resolveProduction([playerResult], state, time);
-      }
-
-      // Collect feedback written during resolution
-      const newFeedback = state.action_feedback["player"].slice(prevFeedbackLen);
-      const resultText = newFeedback.length > 0
-        ? newFeedback.join(" ")
-        : resolved.result ?? "Done.";
-
-      writeWorldState(state);
-      emitSSE("player:update", {
-        agent: "player",
-        result: resultText,
-        location: state.agent_locations["player"] ?? "Village Square",
-        wallet: state.economics["player"]?.wallet ?? 0,
-      });
-      headers["Content-Type"] = "application/json";
-      res.writeHead(200, headers);
-      res.end(JSON.stringify({ ok: true, immediate: true }));
-      return;
-    }
-
-    // ─── Player: clear action queue ────────────────
-    if (path === "/api/player/action" && req.method === "DELETE") {
-      const state = readWorldState();
-      state.pending_player_actions = [];
-      writeWorldState(state);
-      headers["Content-Type"] = "application/json";
-      res.writeHead(200, headers);
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-
     // ─── God Mode: trigger event ───────────────────
     if (path === "/api/events/trigger" && req.method === "POST") {
       const body = await parseBody(req);
@@ -334,8 +240,10 @@ const server = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, error: `Invalid agendaType: ${agendaType}` }));
         return;
       }
+      const delay = body["delay"] != null ? Number(body["delay"]) : 2;
+      const teleport = body["teleport"] !== false;
       const state = readWorldState();
-      triggerMeeting(state, state.current_tick, agendaType as "tax_change" | "marketplace_hours" | "banishment" | "general_rule", description, target as import("./types.js").AgentName | undefined);
+      triggerMeeting(state, state.current_tick, agendaType as "tax_change" | "marketplace_hours" | "banishment" | "general_rule", description, target as import("./types.js").AgentName | undefined, "brunnfeld", delay, teleport);
       writeWorldState(state);
       emitSSE("event:triggered", { eventType: "meeting_called", description, agendaType, agent_locations: state.agent_locations });
       res.writeHead(200, headers);
@@ -369,7 +277,8 @@ const server = createServer(async (req, res) => {
       const body = await parseBody(req);
       const message = (body["message"] as string) ?? "";
       const state = readWorldState();
-      queueMessage(state, "otto", agentId, `A villager whispered: "${message}"`, state.current_tick);
+      const elder = getVillageElder(getAgentVillage(agentId)) ?? agentId;
+      queueMessage(state, elder as AgentName, agentId, `A villager whispered: "${message}"`, state.current_tick);
       writeWorldState(state);
       headers["Content-Type"] = "application/json";
       res.writeHead(200, headers);
@@ -391,7 +300,7 @@ const server = createServer(async (req, res) => {
       const villages = getVillages().map(v => ({
         id: v.id,
         name: v.name,
-        agentCount: v.agents.filter(a => a.id !== "player").length,
+        agentCount: v.agents.length,
         locationTiles: v.locationTiles ?? {},
         locationTypes: v.locationTypes ?? {},
       }));
@@ -421,7 +330,7 @@ const server = createServer(async (req, res) => {
         }
         // Reload world registry so subsequent API calls reflect new config
         reloadConfig();
-        const totalAgents = getVillages().reduce((n, v) => n + v.agents.filter(a => a.id !== "player").length, 0);
+        const totalAgents = getVillages().reduce((n, v) => n + v.agents.length, 0);
         headers["Content-Type"] = "application/json";
         res.writeHead(200, headers);
         res.end(JSON.stringify({ ok: true, villages, totalAgents }));

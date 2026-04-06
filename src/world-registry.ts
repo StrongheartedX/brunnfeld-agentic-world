@@ -94,13 +94,12 @@ const DEFAULT_DESCRIPTIONS: Record<string, string> = {
   otto: "the village elder", pater_markus: "the village priest",
   dieter: "a miner", magda: "a villager", heinrich: "a farmer",
   elke: "the seamstress", rupert: "a miner",
-  player: "a newcomer to the village",
 };
 
 // ─── Build default single-village config from hardcoded constants ────────
 
 function buildDefaultConfig(): WorldConfig {
-  const agents: AgentConfig[] = [...AGENT_NAMES, "player"].map(id => ({
+  const agents: AgentConfig[] = [...AGENT_NAMES].map(id => ({
     id,
     displayName: AGENT_DISPLAY_NAMES[id] ?? id,
     skill: AGENT_SKILLS[id] ?? "none",
@@ -202,12 +201,12 @@ function ensureMaps(): void {
 // ─── Public API ───────────────────────────────────────────────
 
 export function getAgentNames(): string[] {
-  return getConfig().villages.flatMap(v => v.agents.map(a => a.id)).filter(id => id !== "player");
+  return getConfig().villages.flatMap(v => v.agents.map(a => a.id));
 }
 
 export function getVillageAgents(villageId: string): string[] {
   const v = getConfig().villages.find(v => v.id === villageId);
-  return v ? v.agents.map(a => a.id).filter(id => id !== "player") : [];
+  return v ? v.agents.map(a => a.id) : [];
 }
 
 export function getAgentVillage(agent: string): string {
@@ -235,6 +234,16 @@ export function getDescription(agent: string): string {
 export function getCouncilMembers(villageId: string): string[] {
   const v = getConfig().villages.find(v => v.id === villageId);
   return v?.councilMembers ?? [];
+}
+
+export function getVillageElder(villageId: string): string | undefined {
+  return getCouncilMembers(villageId)[0];
+}
+
+export function getVillageTownHall(villageId: string): string {
+  const v = getConfig().villages.find(v => v.id === villageId);
+  if (!v) return "Town Hall";
+  return v.locations.find(l => l.endsWith("Town Hall")) ?? "Town Hall";
 }
 
 export function getVillageLocations(villageId: string): string[] {

@@ -1,6 +1,6 @@
 import type { ActiveEvent, AgentName, ItemType, WorldState } from "./types.js";
 import { readAgentProfile, readAgentMemory } from "./memory.js";
-import { getAgentNames, getDisplayName } from "./world-registry.js";
+import { getAgentNames, getDisplayName, getVillageElder, getVillageTownHall, getAgentVillage, getVillageAgents } from "./world-registry.js";
 import { queueMessage } from "./messages.js";
 import { addToInventory, removeFromInventory, feedbackToAgent } from "./inventory.js";
 import { callClaude } from "./llm.js";
@@ -33,27 +33,31 @@ export function getEventProductionMultiplier(
 // ─── Caravan cleanup ──────────────────────────────────────────
 
 function cleanupCaravanStock(state: WorldState): void {
-  const ottoInv = state.economics["otto"].inventory;
+  const elder = getVillageElder("brunnfeld");
+  if (!elder) return;
+  const elderEco = state.economics[elder];
+  if (!elderEco) return;
+  const elderInv = elderEco.inventory;
   const caravanItems: ItemType[] = ["wheat", "bread", "vegetables", "medicine", "cloth"];
   for (const item of caravanItems) {
-    const entry = ottoInv.items.find(i => i.type === item);
+    const entry = elderInv.items.find(i => i.type === item);
     if (entry) {
       const unsold = entry.quantity - (entry.reserved ?? 0);
-      if (unsold > 0) removeFromInventory(ottoInv, item, unsold);
+      if (unsold > 0) removeFromInventory(elderInv, item, unsold);
     }
   }
-  // Cancel open sell orders from otto for caravan items
+  // Cancel open sell orders from elder for caravan items
   // Clean up in all marketplaces
   const allMkts = state.marketplaces
     ? Object.values(state.marketplaces)
     : [state.marketplace];
   for (const mkt of allMkts) {
     mkt.orders = mkt.orders.filter(
-      o => !(o.agentId === "otto" && caravanItems.includes(o.item)),
+      o => !(o.agentId === elder && caravanItems.includes(o.item)),
     );
   }
-  // Move otto back to the village square
-  state.agent_locations["otto"] = "Village Square";
+  // Move elder back to the village square
+  state.agent_locations[elder] = "Village Square";
 }
 
 // ─── Bandit theft ─────────────────────────────────────────────
@@ -158,7 +162,8 @@ export function triggerDrought(state: WorldState, tick: number): ActiveEvent {
   state.active_events.push(ev);
 
   for (const a of FARMER_AGENTS) {
-    queueMessage(state, "otto", a, "The fields are parched. The drought will halve our harvest for the next three days.", tick);
+    const elder = getVillageElder(getAgentVillage(a));
+    if (elder) queueMessage(state, elder, a, "The fields are parched. The drought will halve our harvest for the next three days.", tick);
   }
   return ev;
 }
@@ -172,9 +177,12 @@ export function triggerCaravan(state: WorldState, tick: number): ActiveEvent {
   };
   state.active_events.push(ev);
 
-  const ottoVillageId = state.economics["otto"]?.villageId ?? "brunnfeld";
-  const ottoMkt = state.marketplaces ? (state.marketplaces[ottoVillageId] ?? state.marketplace) : state.marketplace;
-  const priceIndex = ottoMkt.priceIndex;
+  const elderVillageId = "brunnfeld";
+  const elder = getVillageElder(elderVillageId);
+  if (!elder) return ev;
+
+  const elderMkt = state.marketplaces ? (state.marketplaces[elderVillageId] ?? state.marketplace) : state.marketplace;
+  const priceIndex = elderMkt.priceIndex;
   const PRICE_FLOORS: Partial<Record<ItemType, number>> = {
     wheat: 3, bread: 5, vegetables: 2, medicine: 8, cloth: 6,
   };
@@ -187,16 +195,16 @@ export function triggerCaravan(state: WorldState, tick: number): ActiveEvent {
     { item: "cloth",      qty: 2 },
   ];
 
-  const ottoInv = state.economics["otto"].inventory;
+  const elderInv = state.economics[elder].inventory;
 
   for (const { item, qty } of caravanGoods) {
-    addToInventory(ottoInv, item, qty, tick);
+    addToInventory(elderInv, item, qty, tick);
     const basePrice = priceIndex[item] ?? PRICE_FLOORS[item] ?? 5;
     const price = Math.max(1, Math.floor(basePrice * 0.7));
 
-    ottoMkt.orders.push({
+    elderMkt.orders.push({
       id: `caravan_${item}_${tick}`,
-      agentId: "otto",
+      agentId: elder,
       type: "sell",
       item,
       quantity: qty,
@@ -206,10 +214,13 @@ export function triggerCaravan(state: WorldState, tick: number): ActiveEvent {
     });
   }
 
-  // Move otto to the merchant camp for the duration
-  state.agent_locations["otto"] = "Merchant Camp";
+  // Move elder to the merchant camp for the duration
+  state.agent_locations[elder] = "Merchant Camp";
 
-  queueMessage(state, "otto", "liesel", "A merchant caravan has set up camp near the village square! Go tell the villagers of the cheap goods available today.", tick);
+  // Notify all village agents about the caravan
+  for (const a of getVillageAgents(elderVillageId)) {
+    if (a !== elder) feedbackToAgent(a, state, "A merchant caravan has set up camp near the village square! Cheap goods are available today.");
+  }
   return ev;
 }
 
@@ -223,7 +234,8 @@ export function triggerMineCollapse(state: WorldState, tick: number): ActiveEven
   state.active_events.push(ev);
 
   for (const miner of MINER_AGENTS) {
-    queueMessage(state, "otto", miner, "The mine has collapsed! Do not attempt to enter until it is shored up. No ore extraction for two days.", tick);
+    const elder = getVillageElder(getAgentVillage(miner));
+    if (elder) queueMessage(state, elder, miner, "The mine has collapsed! Do not attempt to enter until it is shored up. No ore extraction for two days.", tick);
   }
   return ev;
 }
@@ -238,7 +250,8 @@ export function triggerDoubleHarvest(state: WorldState, tick: number): ActiveEve
   state.active_events.push(ev);
 
   for (const a of FARMER_AGENTS) {
-    queueMessage(state, "otto", a, "God has blessed us with a bountiful harvest today! Your yields will be doubled.", tick);
+    const elder = getVillageElder(getAgentVillage(a));
+    if (elder) queueMessage(state, elder, a, "God has blessed us with a bountiful harvest today! Your yields will be doubled.", tick);
   }
   return ev;
 }
@@ -253,7 +266,8 @@ export function triggerPlagueRumor(state: WorldState, tick: number): ActiveEvent
   state.active_events.push(ev);
 
   for (const agent of getAgentNames()) {
-    queueMessage(state, "otto", agent, "Word has reached the village: plague spotted in a nearby town. Stock up on medicine if you can.", tick);
+    const elder = getVillageElder(getAgentVillage(agent));
+    if (elder) queueMessage(state, elder, agent, "Word has reached the village: plague spotted in a nearby town. Stock up on medicine if you can.", tick);
   }
   return ev;
 }
@@ -268,7 +282,8 @@ export function triggerBanditThreat(state: WorldState, tick: number): ActiveEven
   state.active_events.push(ev);
 
   for (const agent of getAgentNames()) {
-    queueMessage(state, "otto", agent, "Bandits have been spotted on the roads near Brunnfeld. Keep your valuables safe.", tick);
+    const elder = getVillageElder(getAgentVillage(agent));
+    if (elder) queueMessage(state, elder, agent, "Bandits have been spotted on the roads near Brunnfeld. Keep your valuables safe.", tick);
   }
   return ev;
 }
@@ -314,24 +329,33 @@ export function triggerMeeting(
   agendaType: "tax_change" | "marketplace_hours" | "banishment" | "general_rule",
   description: string,
   target?: AgentName,
+  villageId: string = "brunnfeld",
+  delay: number = 2,
+  teleport: boolean = true,
 ): void {
-  // Use +2 so the meeting always lands on the NEXT unstarted tick, even if God Mode
-  // fires mid-tick (before the engine has written the updated current_tick to disk).
-  const scheduledTick = tick + 2;
-  state.pending_meeting = {
+  const scheduledTick = tick + Math.max(2, delay);
+  state.pending_meetings[villageId] = {
+    villageId,
     scheduledTick,
     agendaType,
     description,
     target,
     calledAtTick: tick,
   };
-  // Teleport all agents to Town Hall so the meeting has quorum
-  for (const a of getAgentNames()) {
-    state.agent_locations[a] = "Town Hall";
+  const townHall = getVillageTownHall(villageId);
+  const villageAgents = getVillageAgents(villageId);
+  if (teleport) {
+    for (const a of villageAgents) {
+      state.agent_locations[a] = townHall;
+    }
   }
-  const noticeText = `Otto has called an emergency village meeting: "${description}". Everyone to the Town Hall immediately!`;
-  for (const a of getAgentNames()) feedbackToAgent(a, state, noticeText);
-  console.log(`  🏛 [God Mode] Emergency meeting scheduled for tick ${scheduledTick} (current_tick on disk: ${tick}). All agents teleported to Town Hall.`);
+  const elder = getVillageElder(villageId);
+  const elderName = elder ? getDisplayName(elder) : "The elder";
+  const noticeText = teleport
+    ? `${elderName} has called an emergency village meeting: "${description}". Everyone to the ${townHall} immediately!`
+    : `${elderName} has called a village meeting: "${description}". It will be held at ${townHall} in ${delay} hours. Attend if you wish to participate.`;
+  for (const a of villageAgents) feedbackToAgent(a, state, noticeText);
+  console.log(`  🏛 [God Mode] Meeting scheduled for tick ${scheduledTick} (${delay} ticks from now).${teleport ? ` All ${villageId} agents teleported to ${townHall}.` : " No teleport — agents must walk."}`);
 }
 
 // ─── Interview ────────────────────────────────────────────────

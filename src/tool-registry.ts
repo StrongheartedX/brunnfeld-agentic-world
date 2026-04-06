@@ -2,7 +2,8 @@ import type { AgentAction, AgentName, ItemType, ResolvedAction, WorldState, SimT
 import type { LocationContext, NegotiationOffer } from "./location-context.js";
 import { readAgentMemory } from "./memory.js";
 import { getInventoryQty, removeFromInventory, addToInventory, feedbackToAgent } from "./inventory.js";
-import { getDisplayName, getAgentVillage, getVillages, getVillageForLocation, getLocationType } from "./world-registry.js";
+import { getDisplayName, getAgentVillage, getVillages, getVillageElder, getVillageTownHall, getVillageLocations, getVillageForLocation, getLocationType, getRoads } from "./world-registry.js";
+import { computeVillageConcerns } from "./village-concerns.js";
 import { getAgentMarketplace } from "./marketplace.js";
 import { resolveAction, type ResolveContext } from "./tools.js";
 import { getProducibleItems, MULTI_FARM_ITEMS } from "./production.js";
@@ -113,6 +114,20 @@ function handleLookAround(_args: Record<string, unknown>, config: HarnessToolCon
     if (topOrders.length > 0) {
       lines.push("Sell orders here:");
       for (const o of topOrders) lines.push(`  ${o.quantity}x ${o.item} @ ${o.price}c`);
+    }
+    const buyOrders = mkt.orders
+      .filter(o => o.type === "buy" && o.agentId !== agentId)
+      .slice(0, 3);
+    if (buyOrders.length > 0) {
+      lines.push("Buy orders (people want):");
+      for (const o of buyOrders) lines.push(`  ${o.quantity}x ${o.item}, paying up to ${o.price}c`);
+    }
+    const ownOrders = mkt.orders.filter(o => o.agentId === agentId);
+    if (ownOrders.length > 0) {
+      lines.push("Your active orders:");
+      for (const o of ownOrders) {
+        lines.push(`  ${o.type.toUpperCase()} ${o.quantity}x ${o.item} @ ${o.price}c (id: ${o.id})`);
+      }
     }
   }
 
@@ -589,7 +604,75 @@ function handlePlan(args: Record<string, unknown>, _config: HarnessToolConfig): 
   return { text: `[Planned] ${text}`, isInteraction: false };
 }
 
-// ─── Tool registry ────────────────────────────────────────────
+// ─── Village info tool handler ───��───────────────────────────
+
+function handleCheckVillage(_args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
+  const { agentId, worldState, time } = config;
+  const villageId = getAgentVillage(agentId);
+  const lines: string[] = [];
+
+  // Laws
+  for (const law of (worldState.active_laws ?? [])) {
+    lines.push(`Law: ${law.description}`);
+  }
+
+  // Concerns (elder only)
+  const elder = getVillageElder(villageId);
+  if (agentId === elder) {
+    const concerns = computeVillageConcerns(worldState, time.tick);
+    if (concerns.length > 0) lines.push(...concerns);
+  }
+
+  // Loans
+  for (const loan of (worldState.loans ?? []).filter(l => !l.repaid)) {
+    if (loan.creditor === agentId) lines.push(`Owed: ${loan.amount}c by ${getDisplayName(loan.debtor)}`);
+    if (loan.debtor === agentId) lines.push(`You owe: ${loan.amount}c to ${getDisplayName(loan.creditor)}`);
+  }
+
+  // Locations + travel
+  const locs = getVillageLocations(villageId);
+  lines.push(`Locations: ${locs.join(", ")}`);
+  for (const road of getRoads().filter(r => r.connectsVillages.includes(villageId))) {
+    const destId = road.connectsVillages.find(v => v !== villageId);
+    const destName = getVillages().find(v => v.id === destId)?.name ?? destId;
+    lines.push(`Travel: ${road.name} → ${destName} (${road.transitTicks} ticks)`);
+  }
+
+  return { text: lines.join("\n") || "Nothing notable.", isInteraction: false };
+}
+
+// ─── Missing action tool handlers ────────────────────────────
+
+function handleSendMessage(args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
+  const resolved = resolveAction({
+    type: "send_message",
+    to: args.to as string,
+    text: args.text as string,
+  } as AgentAction, makeContext(config));
+  config.executedActions.push(resolved);
+  return { text: resolved.result, isInteraction: false, executedAction: resolved };
+}
+
+function handleGiveCoin(args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
+  const resolved = resolveAction({
+    type: "give_coin",
+    to: args.to as string,
+    amount: Number(args.amount ?? 0),
+  } as AgentAction, makeContext(config));
+  config.executedActions.push(resolved);
+  return { text: resolved.result, isInteraction: true, executedAction: resolved };
+}
+
+function handleCancelOrder(args: Record<string, unknown>, config: HarnessToolConfig): ToolResult {
+  const resolved = resolveAction({
+    type: "cancel_order",
+    order_id: args.order_id as string,
+  } as AgentAction, makeContext(config));
+  config.executedActions.push(resolved);
+  return { text: resolved.result, isInteraction: false, executedAction: resolved };
+}
+
+// ─── Tool registry ──────────���─────────────────────────────────
 
 type ToolHandler = (args: Record<string, unknown>, config: HarnessToolConfig) => ToolResult;
 
@@ -598,6 +681,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   check_inventory: handleCheckInventory,
   check_prices:   handleCheckPrices,
   check_body:     handleCheckBody,
+  check_village:  handleCheckVillage,
   recall:         handleRecall,
   assess_person:  handleAssessPerson,
   speak:          handleSpeak,
@@ -609,6 +693,9 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   eat:            handleEat,
   hire_laborer:   handleHireLaborer,
   quit_job:       handleQuitJob,
+  send_message:   handleSendMessage,
+  give_coin:      handleGiveCoin,
+  cancel_order:   handleCancelOrder,
   think:          handleThink,
   plan:           handlePlan,
   done:           () => ({ text: "Turn ended.", isInteraction: false }),
@@ -619,6 +706,7 @@ const ALL_TOOL_DEFS: ToolDef[] = [
   { name: "check_inventory",description: "View your inventory and wallet",                      argsHint: "{}" },
   { name: "check_prices",   description: "Check market prices for an item",                     argsHint: '{"item": "flour"}' },
   { name: "check_body",     description: "Check your hunger, energy, health",                   argsHint: "{}" },
+  { name: "check_village",  description: "Village laws, loans, locations, travel options",       argsHint: "{}" },
   { name: "recall",         description: "Search your memory for a topic",                      argsHint: '{"topic": "wheat trade"}' },
   { name: "assess_person",  description: "What you know about someone (must be acquainted)",    argsHint: '{"name": "Anselm"}' },
   { name: "speak",          description: "Say something aloud — max 15 words, only if others present", argsHint: '{"text": "..."}' },
@@ -628,6 +716,9 @@ const ALL_TOOL_DEFS: ToolDef[] = [
   { name: "post_order",     description: "Post a market buy or sell order",                     argsHint: '{"side": "sell", "item": "flour", "qty": 3, "price": 6}' },
   { name: "buy_item",       description: "Buy from market — must be at Village Square",         argsHint: '{"item": "bread", "max_price": 5}' },
   { name: "eat",            description: "Eat food from your inventory",                        argsHint: '{"item": "bread", "qty": 1}' },
+  { name: "send_message",   description: "Send a written message to someone (delivered next tick)", argsHint: '{"to": "Rudolf", "text": "..."}' },
+  { name: "give_coin",      description: "Give coin to someone here",                           argsHint: '{"to": "Rudolf", "amount": 5}' },
+  { name: "cancel_order",   description: "Cancel your marketplace order",                       argsHint: '{"order_id": "ord_123"}' },
   { name: "hire_laborer",   description: "Pay someone here to work for you today (output goes to you)", argsHint: '{"agent": "Pabo", "wage": 5}' },
   { name: "quit_job",       description: "Quit your current job and stop working for your employer", argsHint: "{}" },
   { name: "think",          description: "Inner thought — not heard by others, max 10 words",   argsHint: '{"text": "..."}' },
@@ -669,8 +760,8 @@ export function executeToolCall(
 }
 
 export function formatToolsForPrompt(tools: ToolDef[]): string {
-  const obs   = ["look_around", "check_inventory", "check_prices", "check_body", "recall", "assess_person"];
-  const act   = ["speak", "negotiate", "produce", "move_to", "post_order", "buy_item", "eat", "hire_laborer", "quit_job"];
+  const obs   = ["look_around", "check_inventory", "check_prices", "check_body", "check_village", "recall", "assess_person"];
+  const act   = ["speak", "negotiate", "produce", "move_to", "post_order", "buy_item", "eat", "send_message", "give_coin", "cancel_order", "hire_laborer", "quit_job"];
   const plan  = ["think", "done"];
 
   const group = (label: string, names: string[]) => {
@@ -703,6 +794,10 @@ export function getToolSummary(toolName: string, args: Record<string, unknown>):
     eat:            a => `eating ${String(a.item ?? "food")}`,
     hire_laborer:   a => `hiring ${String(a.agent ?? "someone")}`,
     quit_job:       () => "quitting job",
+    check_village:  () => "checking village info",
+    send_message:   a => `messaging ${String(a.to ?? "someone")}`,
+    give_coin:      a => `giving ${String(a.amount ?? "?")}c to ${String(a.to ?? "someone")}`,
+    cancel_order:   a => `cancelling order ${String(a.order_id ?? "?")}`,
     think:          () => "thinking",
     done:           () => "finishing turn",
   };

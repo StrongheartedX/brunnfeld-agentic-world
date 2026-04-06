@@ -8,12 +8,18 @@ interface Props {
 export default function ScaleSelector({ onWorldGenerated }: Props) {
   const setVillages = useVillageStore((s) => s.setVillages);
   const setActiveVillageId = useVillageStore((s) => s.setActiveVillageId);
+  const setWorld = useVillageStore((s) => s.setWorld);
 
-  const [numVillages, setNumVillages] = useState(1);
-  const [agentsPerVillage, setAgentsPerVillage] = useState(19);
+  const [numVillages, setNumVillages] = useState(() => {
+    const saved = localStorage.getItem("brunnfeld:numVillages");
+    return saved ? Number(saved) : 1;
+  });
+  const [agentsPerVillage, setAgentsPerVillage] = useState(() => {
+    const saved = localStorage.getItem("brunnfeld:agentsPerVillage");
+    return saved ? Number(saved) : 19;
+  });
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
 
   const VILLAGE_OPTIONS = [1, 2, 3, 5];
   const AGENT_OPTIONS = [19, 30, 50, 100, 200];
@@ -21,6 +27,8 @@ export default function ScaleSelector({ onWorldGenerated }: Props) {
   const handleGenerate = async () => {
     setGenerating(true);
     setError(null);
+    localStorage.setItem("brunnfeld:numVillages", String(numVillages));
+    localStorage.setItem("brunnfeld:agentsPerVillage", String(agentsPerVillage));
     try {
       const res = await fetch("/api/generate-world", {
         method: "POST",
@@ -30,12 +38,19 @@ export default function ScaleSelector({ onWorldGenerated }: Props) {
       const data = await res.json();
       if (!data.ok) throw new Error(data.error ?? "Unknown error");
 
-      // Reload village list
-      const villagesRes = await fetch("/api/villages");
+      // Reload world state + village list with the newly generated data
+      const [stateRes, villagesRes] = await Promise.all([
+        fetch("/api/state"),
+        fetch("/api/villages"),
+      ]);
+      const newState = await stateRes.json();
       const villages = await villagesRes.json();
+      setWorld(newState);
       setVillages(villages);
       setActiveVillageId(villages[0]?.id ?? "brunnfeld");
-      setDone(true);
+
+      // Start the simulation
+      await fetch("/api/start", { method: "POST" });
       onWorldGenerated?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -73,23 +88,6 @@ export default function ScaleSelector({ onWorldGenerated }: Props) {
     cursor: generating ? "not-allowed" : "pointer",
     fontFamily: "Georgia, serif", marginTop: 8,
   };
-
-  if (done) {
-    return (
-      <div style={overlayStyle}>
-        <div style={cardStyle}>
-          <div style={{ fontSize: 22, fontWeight: "bold", marginBottom: 8, color: "#f0c060" }}>World ready</div>
-          <div style={{ fontSize: 13, color: "#60c060", marginBottom: 24 }}>
-            {numVillages} village{numVillages > 1 ? "s" : ""} · {numVillages * agentsPerVillage} agents generated.
-            Reload the page to start the simulation.
-          </div>
-          <button style={generateStyle} onClick={() => window.location.reload()}>
-            Start Simulation →
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div style={overlayStyle}>
